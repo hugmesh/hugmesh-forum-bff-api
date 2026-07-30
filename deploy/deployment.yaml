@@ -1,0 +1,190 @@
+# forum-bff — the Backend-For-Frontend the hugmesh-forum-ui talks to for the
+# forum surfaces (/bff/forum/**): categories, topics, replies, moderation, and the
+# admin-console seam. It is the SINGLE browser->phpBB path:
+#   browser -> fe-gateway /bff/forum/** -> forum-bff -> phpBB forum-api extension.
+# The browser NEVER talks to phpBB directly. forum-bff owns the forum_user_role /
+# forum_action tables in its OWN dedicated Postgres (forum-bff-db).
+#
+# It is a ClusterIP-only service in hugmesh-backend: nothing reaches it from
+# outside except via the fe-gateway, which routes same-origin /bff/forum/** to it
+# AND enforces the Casdoor role rules (/bff/forum/** => ROLE_FORUM,
+# /bff/forum/moderation/** => ROLE_FORUM_MOD, /bff/forum/admin/** => ROLE_ADMIN)
+# from the route DB first. Defence-in-depth: forum-bff re-checks role + ownership.
+#
+# Security model: like user-bff/federation-api, forum-bff is an OAuth2 RESOURCE
+# SERVER — it VALIDATES the cluster Casdoor JWT itself (CASDOOR_ISSUER_URI, JWKS
+# auto-discovered) and FORWARDS the caller's bearer token (+ X-HugMesh-JWT)
+# onward to the phpBB extension over mTLS. It mints/holds NO outbound client creds.
+#
+# phpBB reach: forum-bff is the EGRESS SOURCE into the isolated hugmesh-forum
+# namespace (network-policy.yaml admits this pod's app label to phpbb:80). The
+# extension shape is not yet pinned, so EXTERNAL_FORUM_ENABLED defaults false
+# (stub-seam: forum-bff boots clean + always-audits; no live phpBB call). Flip true
+# only after the hugmesh/forum-api extension is validated on-cluster.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hugmesh-forum-bff-api
+  namespace: hugmesh-backend
+  labels: { app: hugmesh-forum-bff-api, app.kubernetes.io/part-of: hugmesh.systems }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: hugmesh-forum-bff-api } }
+  template:
+    metadata: { labels: { app: hugmesh-forum-bff-api } }
+    spec:
+      nodeSelector: { hugmesh.systems/backend: "true" }
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile: { type: RuntimeDefault }
+        seLinuxOptions:
+          type: container_t
+          level: "s0:c53"
+      # ── API-to-API mTLS identity (build-keystore) ───────────────────────────
+      # Mirrors the user-bff-api/gateway build-keystore initContainer: turns the
+      # Vault-PKI-issued, ESO-synced TLS Secret (hugmesh-forum-bff-api-mtls:
+      # tls.crt/tls.key/ca.crt) into keystore.p12 (identity) + truststore.p12
+      # (cluster CA) for server.ssl.* to REQUIRE a client cert chaining to the
+      # cluster CA. Store password generated in-pod, kept only in the tmpfs /stores
+      # emptyDir, emitted into application-tls.properties via
+      # SPRING_CONFIG_ADDITIONAL_LOCATION — never in git / a Secret / the pod spec.
+      # The SAME keystore.p12 is presented as the CLIENT cert to the phpBB extension.
+      initContainers:
+        - name: build-keystore
+          image: hugmesh-systems/forum-bff-api:dev
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              P="$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)"
+              openssl pkcs12 -export -inkey /pki/tls.key -in /pki/tls.crt \
+                -certfile /pki/ca.crt -name hugmesh-forum-bff-api \
+                -out /stores/keystore.p12 -passout "pass:${P}"
+              keytool -importcert -noprompt -alias hugmesh-cluster-ca \
+                -file /pki/ca.crt -keystore /stores/truststore.p12 \
+                -storetype PKCS12 -storepass "${P}"
+              umask 077
+              cat > /stores/application-tls.properties <<EOF
+              server.ssl.key-store-password=${P}
+              server.ssl.trust-store-password=${P}
+              EOF
+              echo "keystore + truststore + application-tls.properties built"
+          volumeMounts:
+            - { name: pki,    mountPath: /pki, readOnly: true }
+            - { name: stores, mountPath: /stores }
+      containers:
+        - name: hugmesh-forum-bff-api
+          image: hugmesh-systems/forum-bff-api:dev
+          ports: [{ name: http, containerPort: 8080 }]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          env:
+            # ── API-to-API mTLS (server side) ─────────────────────────────────
+            # Require a client cert chaining to the cluster CA. Store passwords come
+            # from /stores/application-tls.properties (in-pod generated, loaded via
+            # SPRING_CONFIG_ADDITIONAL_LOCATION) so they never enter the pod spec.
+            # DEPLOY-ORDER: deploy with the gateway/BFF client-cert wave.
+            - { name: SSL_ENABLED,          value: "true" }
+            - { name: SSL_CLIENT_AUTH,      value: "need" }
+            - { name: SSL_KEY_STORE,        value: "/stores/keystore.p12" }
+            - { name: SSL_KEY_STORE_TYPE,   value: "PKCS12" }
+            - { name: SSL_TRUST_STORE,      value: "/stores/truststore.p12" }
+            - { name: SSL_TRUST_STORE_TYPE, value: "PKCS12" }
+            - { name: SPRING_CONFIG_ADDITIONAL_LOCATION, value: "file:/stores/" }
+            # OAuth2 resource server: validate the cluster Casdoor JWT itself.
+            - { name: CASDOOR_ISSUER_URI, value: "https://id.hugmesh.systems" }
+            # ── phpBB forum-api extension (the headless upstream) ──────────────
+            # The in-cluster phpbb Service DNS in the isolated hugmesh-forum ns.
+            # forum-bff presents its client cert + forwards the caller JWT (Bearer +
+            # X-HugMesh-JWT). The extension shape is not yet pinned, so the
+            # stub-seam is OFF by default (forum-bff boots clean + always-audits).
+            - name: PHPBB_API_BASE_URL
+              value: "http://phpbb.hugmesh-forum.svc.cluster.local:80"
+            # GATED stub-seam (mirrors mod-bff's external.<platform>.enabled). When
+            # false: PhpbbAdminClient.doBlock/suspend etc. return STUBBED + audit to
+            # forum_action, never call phpBB. Flip true after the extension is live.
+            - { name: EXTERNAL_FORUM_ENABLED, value: "false" }
+            # Present the client cert to the phpBB extension (the extension MAY front
+            # a server cert; inside the hugmesh-forum default-deny boundary either
+            # way). Gated like the other downstream mTLS legs.
+            - { name: HUGMESH_MTLS_CLIENT_ENABLED, value: "true" }
+            # Config datastore: the forum_user_role / forum_action tables. The app's
+            # application.yml defaults spring.r2dbc + spring.liquibase to a literal
+            # `hugmesh-pg` host that does NOT exist; OVERRIDE both here to the
+            # dedicated forum-bff-db (mirrors how user-bff/admin-bff/federation
+            # override to their dedicated dbs). R2DBC is the runtime handle; the JDBC
+            # handle is used by Liquibase ONCE at startup.
+            # RUNTIME handle: log in as the dedicated NON-OWNER least-privilege role
+            # `forumbff_app` (DML only), created by forum-bff-db's initdb/10-roles.sh.
+            # Password from its OWN ESO Secret forum-bff-db-app-auth (the SAME the DB
+            # pod's FORUMBFF_APP_PASSWORD mounts).
+            - name: SPRING_R2DBC_URL
+              value: "r2dbc:postgresql://forum-bff-db.hugmesh-backend.svc.cluster.local:5432/forumbff"
+            - name: SPRING_R2DBC_USERNAME
+              value: "forumbff_app"
+            - name: SPRING_R2DBC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: forum-bff-db-app-auth
+                  key: password
+            # JDBC handle used ONLY by Liquibase at startup. DDL needs the OWNER, so
+            # Liquibase keeps the owner role `forumbff` + the owner ESO Secret
+            # forum-bff-db-auth (the SAME the DB pod's POSTGRES_PASSWORD mounts).
+            - name: SPRING_LIQUIBASE_URL
+              value: "jdbc:postgresql://forum-bff-db.hugmesh-backend.svc.cluster.local:5432/forumbff"
+            - name: SPRING_LIQUIBASE_USER
+              value: "forumbff"
+            - name: SPRING_LIQUIBASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: forum-bff-db-auth
+                  key: password
+          # HTTPS exec probe: client-auth=need rejects a cert-less kubelet httpGet,
+          # so curl PRESENTS this pod's client cert and validates the server cert
+          # against the cluster CA (--resolve maps the SAN to loopback).
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -ec
+                - >-
+                  curl -sf --cert /pki/tls.crt --key /pki/tls.key --cacert /pki/ca.crt
+                  --resolve hugmesh-forum-bff-api:8080:127.0.0.1
+                  https://hugmesh-forum-bff-api:8080/actuator/health/readiness
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -ec
+                - >-
+                  curl -sf --cert /pki/tls.crt --key /pki/tls.key --cacert /pki/ca.crt
+                  --resolve hugmesh-forum-bff-api:8080:127.0.0.1
+                  https://hugmesh-forum-bff-api:8080/actuator/health/liveness
+            initialDelaySeconds: 45
+            periodSeconds: 15
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits:   { cpu: "1",  memory: 768Mi }
+          volumeMounts:
+            - { name: tmp,    mountPath: /tmp }
+            - { name: stores, mountPath: /stores, readOnly: true }
+            - { name: pki,    mountPath: /pki,    readOnly: true }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        # Vault-PKI-issued mTLS material, synced by ESO (kubernetes.io/tls).
+        - name: pki
+          secret:
+            secretName: hugmesh-forum-bff-api-mtls
+        # tmpfs for the assembled PKCS12 stores + the in-pod SSL properties.
+        - name: stores
+          emptyDir:
+            medium: Memory

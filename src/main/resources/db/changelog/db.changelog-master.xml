@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+            http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.29.xsd">
+
+    <!--
+      Forum BFF schema. Liquibase runs over a JDBC datasource (Liquibase has no
+      R2DBC runner); all runtime data access goes through R2DBC.
+
+        001 — forum_user_role  (casdoor_subject PK/UNIQUE binding to the phpBB user +
+              last computed group_membership + last_synced; the IMMUTABLE Casdoor sub
+              is the uniqueness key, NEVER localpart — collision-safe)
+        002 — forum_action     (forum-bff's OWN audit table — mirrors the mod-bff
+              mod_action shape but is a SEPARATE table; mod-bff's
+              ck_mod_action_platform CHECK is NEVER widened/touched)
+        003 — domain scoping   (multi-brand: a `domain` column on forum_user_role +
+              forum_action so a forum admin/mod of brand X only sees its own brand's
+              rows; DEFAULT 'default' NOT NULL keeps single-tenant clusters unchanged;
+              SUPERADMIN is unscoped)
+        004 — DB-generated UUID PKs (stop minting forum_action.id in Java; Postgres
+              fills it from a (gen_random_uuid())::text column DEFAULT and the repository
+              reads it back with INSERT ... RETURNING id — the org-wide migration,
+              mod-bff #36 / admin-bff #133 pattern)
+        005 — forum_vn_profile (the visual-novel reading-mode profile keyed by the
+              immutable Casdoor sub — sticker/character-image/voicebox presentation;
+              domain-scoped exactly like 003's forum_user_role treatment)
+    -->
+
+    <include file="db/changelog/001-forum-user-role-cache.xml"/>
+    <include file="db/changelog/002-forum-audit.xml"/>
+    <include file="db/changelog/003-domain-scoping.xml"/>
+    <include file="db/changelog/004-db-generated-uuid-pks.xml"/>
+    <include file="db/changelog/005-vn-profile.xml"/>
+</databaseChangeLog>

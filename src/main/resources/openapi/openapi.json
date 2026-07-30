@@ -1,0 +1,1570 @@
+{
+  "openapi" : "3.0.1",
+  "info" : {
+    "title" : "hugmesh-forum-bff-api",
+    "description" : "Forum BFF API (/bff/forum/**) — the single browser->phpBB path wrapping the headless phpBB forum per role + action: authenticated read/post under /bff/forum/**, MOD+FORUM moderation under /bff/forum/moderation/**, and the ADMIN console seam under /bff/forum/admin/**. phpBB has no native REST API; the headless hugmesh/forum-api extension client is a gated stub-seam.",
+    "version" : "0.1.0"
+  },
+  "servers" : [ {
+    "url" : "http://localhost:42077",
+    "description" : "Generated server url"
+  } ],
+  "tags" : [ {
+    "name" : "ForumModeration",
+    "description" : "MOD+FORUM (or ADMIN) moderation: hide/delete any post, lock threads, view the moderation queue. AND-of-MOD+FORUM (not hasAnyRole)."
+  }, {
+    "name" : "ForumAdmin",
+    "description" : "ADMIN-only forum console seam (admin-bff calls this): ban/unban, group assign, stats, audit, style/extension install."
+  }, {
+    "name" : "Forum",
+    "description" : "Authenticated forum surface wrapping headless phpBB: categories, topics, replies, and owner-scoped edit/delete. ROLE_FORUM (or ROLE_ADMIN)."
+  }, {
+    "name" : "ForumVnProfile",
+    "description" : "Visual-novel reading-mode profiles: the caller's own sticker/character-image/voicebox presentation (GET/PUT /me, never 404 — defaults are synthesized) and the batched author lookup (1..50 subjects). Authenticated; no forum role required."
+  } ],
+  "paths" : {
+    "/bff/forum/vn-profiles/me" : {
+      "get" : {
+        "tags" : [ "ForumVnProfile" ],
+        "summary" : "Get the caller's VN profile (never 404 — synthesized defaults when none is stored).",
+        "operationId" : "getMyVnProfile",
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/VnProfile"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put" : {
+        "tags" : [ "ForumVnProfile" ],
+        "summary" : "Create or update the caller's VN profile (subject always from the JWT, never the body).",
+        "operationId" : "updateMyVnProfile",
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/UpdateVnProfile"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/VnProfile"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/bff/forum/posts/{id}" : {
+      "put" : {
+        "tags" : [ "Forum" ],
+        "summary" : "Edit a post (owner or ADMIN only).",
+        "operationId" : "editForumPost",
+        "parameters" : [ {
+          "name" : "id",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "integer",
+            "format" : "int64"
+          }
+        } ],
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/EditPost"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "description" : "Post edited",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "202" : {
+            "description" : "Pending — phpBB extension stub-seam is dark (ownership unverifiable; nothing written)",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "400" : {
+            "description" : "Validation failed"
+          },
+          "401" : {
+            "description" : "Unauthenticated"
+          },
+          "403" : {
+            "description" : "Caller is not the post owner and lacks ROLE_ADMIN"
+          },
+          "404" : {
+            "description" : "Post not found or seam degraded"
+          },
+          "500" : {
+            "description" : "Unexpected server error"
+          }
+        }
+      },
+      "delete" : {
+        "tags" : [ "Forum" ],
+        "summary" : "Delete a post (owner or ADMIN only).",
+        "operationId" : "deleteForumPost",
+        "parameters" : [ {
+          "name" : "id",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "integer",
+            "format" : "int64"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "Post deleted",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "401" : {
+            "description" : "Unauthenticated"
+          },
+          "403" : {
+            "description" : "Caller is not the post owner and lacks ROLE_ADMIN"
+          },
+          "404" : {
+            "description" : "Post not found or seam degraded"
+          },
+          "500" : {
+            "description" : "Unexpected server error"
+          }
+        }
+      }
+    },
+    "/bff/forum/admin/users/{subject}/groups" : {
+      "put" : {
+        "tags" : [ "ForumAdmin" ],
+        "summary" : "Sync phpBB group membership for a target user (ADMIN ONLY; audited).",
+        "operationId" : "syncForumUserGroups",
+        "parameters" : [ {
+          "name" : "subject",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "responses" : {
+          "400" : {
+            "description" : "Bad Request",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "200" : {
+            "description" : "Group membership synced"
+          },
+          "401" : {
+            "description" : "Unauthenticated"
+          },
+          "403" : {
+            "description" : "Caller lacks ROLE_ADMIN"
+          },
+          "404" : {
+            "description" : "Target user not found"
+          },
+          "500" : {
+            "description" : "Unexpected server error"
+          }
+        }
+      },
+      "post" : {
+        "tags" : [ "ForumAdmin" ],
+        "summary" : "Assign a target user to a NAMED phpBB group (ADMIN ONLY; audited).",
+        "operationId" : "assignForumUserGroup",
+        "parameters" : [ {
+          "name" : "subject",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/GroupBody"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "400" : {
+            "description" : "Unknown ForumGroup name",
+            "content" : { }
+          },
+          "200" : {
+            "description" : "Group assigned"
+          },
+          "401" : {
+            "description" : "Unauthenticated"
+          },
+          "403" : {
+            "description" : "Caller lacks ROLE_ADMIN"
+          },
+          "500" : {
+            "description" : "Unexpected server error"
+          }
+        }
+      }
+    },
+    "/bff/forum/vn-profiles/lookup" : {
+      "post" : {
+        "tags" : [ "ForumVnProfile" ],
+        "summary" : "Batch-resolve VN profiles for up to 50 subjects (subjects with no profile are absent from the map).",
+        "operationId" : "lookupVnProfiles",
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/VnLookupRequest"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/VnLookupResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/bff/forum/topics" : {
+      "get" : {
+        "tags" : [ "Forum" ],
+        "summary" : "List topics in a category.",
+        "operationId" : "listForumTopics",
+        "parameters" : [ {
+          "name" : "categoryId",
+          "in" : "query",
+          "required" : true,
+          "schema" : {
+            "type" : "integer",
+            "format" : "int64"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "Topic list returned",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "401" : {
+            "description" : "Unauthenticated"
+          },
+          "403" : {
+            "description" : "Caller lacks ROLE_FORUM or ROLE_ADMIN"
+          },
+          "500" : {
+            "description" : "Unexpected server error"
+          }
+        }
+      },
+      "post" : {
+        "tags" : [ "Forum" ],
+        "summary" : "Create a topic (acts as the caller's phpBB user).",
+        "operationId" : "createForumTopic",
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/CreateTopic"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "description" : "Topic created",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "202" : {
+            "description" : "Pending — phpBB extension stub-seam is dark",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "400" : {
+            "description" : "Validation failed — missing/invalid field"
+          },
+          "401" : {
+            "description" : "Unauthenticated"
+          },
+          "403" : {
+            "description" : "Caller lacks ROLE_FORUM or ROLE_ADMIN"
+          },
+          "500" : {
+            "description" : "Unexpected server error"
+          }
+        }
+      }
+    },
+    "/bff/forum/topics/{id}/replies" : {
+      "post" : {
+        "tags" : [ "Forum" ],
+        "summary" : "Reply to a topic (acts as the caller's phpBB user).",
+        "operationId" : "replyToForumTopic",
+        "parameters" : [ {
+          "name" : "id",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "integer",
+            "format" : "int64"
+          }
+        } ],
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/CreateReply"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "description" : "Reply created",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "202" : {
+            "description" : "Pending — phpBB extension stub-seam is dark",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "400" : {
+            "description" : "Validation failed — missing/invalid field"
+          },
+          "401" : {
+            "description" : "Unauthenticated"
+          },
+          "403" : {
+            "description" : "Caller lacks ROLE_FORUM or ROLE_ADMIN"
+          },
+          "500" : {
+            "description" : "Unexpected server error"
+          }
+        }
+      }
+    },
+    "/bff/forum/moderation/topics/{id}" : {
+      "post" : {
+        "tags" : [ "ForumModeration" ],
+        "summary" : "Moderate a topic (hide/lock/delete) — any post, not just own.",
+        "operationId" : "moderateForumTopic",
+        "parameters" : [ {
+          "name" : "id",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "integer",
+            "format" : "int64"
+          }
+        } ],
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/ModerationAction"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "description" : "Topic moderation action applied",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "400" : {
+            "description" : "Validation failed — missing/invalid action field"
+          },
+          "401" : {
+            "description" : "Unauthenticated"
+          },
+          "403" : {
+            "description" : "Caller is not ROLE_ADMIN and does not hold both ROLE_MOD and ROLE_FORUM"
+          },
+          "404" : {
+            "description" : "Topic not found"
+          },
+          "500" : {
+            "description" : "Unexpected server error"
+          }
+        }
+      }
+    },
+    "/bff/forum/admin/users/{subject}/ban" : {
+      "post" : {
+        "tags" : [ "ForumAdmin" ],
+        "summary" : "Ban a user in phpBB (congruence; STUBBED → 202 pending, always audited).",
+        "operationId" : "banForumUser",
+        "parameters" : [ {
+          "name" : "subject",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "reason",
+          "in" : "query",
+          "required" : false,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/BanBody"
+              }
+            }
+          }
+        },
+        "responses" : {
+          "400" : {
+            "description" : "Bad Request",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "200" : {
+            "description" : "Ban applied in phpBB (real OK from extension)",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "202" : {
+            "description" : "Pending-reconcile — phpBB seam is STUBBED/degraded; action audited",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "401" : {
+            "description" : "Unauthenticated"
+          },
+          "403" : {
+            "description" : "Caller lacks ROLE_ADMIN"
+          },
+          "500" : {
+            "description" : "Unexpected server error"
+          }
+        }
+      },
+      "delete" : {
+        "tags" : [ "ForumAdmin" ],
+        "summary" : "Lift a phpBB ban (reversible; STUBBED → 202 pending, always audited).",
+        "operationId" : "unbanForumUser",
+        "parameters" : [ {
+          "name" : "subject",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "reason",
+          "in" : "query",
+          "required" : false,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "responses" : {
+          "400" : {
+            "description" : "Bad Request",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "200" : {
+            "description" : "Ban lifted in phpBB (real OK from extension)",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "202" : {
+            "description" : "Pending-reconcile — phpBB seam is STUBBED/degraded; action audited",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "401" : {
+            "description" : "Unauthenticated"
+          },
+          "403" : {
+            "description" : "Caller lacks ROLE_ADMIN"
+          },
+          "500" : {
+            "description" : "Unexpected server error"
+          }
+        }
+      }
+    },
+    "/bff/forum/admin/styles" : {
+      "post" : {
+        "tags" : [ "ForumAdmin" ],
+        "summary" : "Install a phpBB style (ADMIN ONLY).",
+        "operationId" : "installForumStyle",
+        "parameters" : [ {
+          "name" : "name",
+          "in" : "query",
+          "required" : false,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/InstallBody"
+              }
+            }
+          }
+        },
+        "responses" : {
+          "400" : {
+            "description" : "Name missing or invalid",
+            "content" : { }
+          },
+          "200" : {
+            "description" : "Style installed",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "401" : {
+            "description" : "Unauthenticated"
+          },
+          "403" : {
+            "description" : "Caller lacks ROLE_ADMIN"
+          },
+          "500" : {
+            "description" : "Unexpected server error"
+          }
+        }
+      }
+    },
+    "/bff/forum/admin/moderation/{id}/reject" : {
+      "post" : {
+        "tags" : [ "ForumAdmin" ],
+        "summary" : "Reject a queued post (ADMIN ONLY; audited).",
+        "operationId" : "rejectForumQueuedPost",
+        "parameters" : [ {
+          "name" : "id",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "responses" : {
+          "400" : {
+            "description" : "Bad Request",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "200" : {
+            "description" : "Post rejected",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "401" : {
+            "description" : "Unauthenticated"
+          },
+          "403" : {
+            "description" : "Caller lacks ROLE_ADMIN"
+          },
+          "404" : {
+            "description" : "Queued post not found"
+          },
+          "500" : {
+            "description" : "Unexpected server error"
+          }
+        }
+      }
+    },
+    "/bff/forum/admin/moderation/{id}/approve" : {
+      "post" : {
+        "tags" : [ "ForumAdmin" ],
+        "summary" : "Approve a queued post (ADMIN ONLY; audited).",
+        "operationId" : "approveForumQueuedPost",
+        "parameters" : [ {
+          "name" : "id",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "responses" : {
+          "400" : {
+            "description" : "Bad Request",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "200" : {
+            "description" : "Post approved",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "401" : {
+            "description" : "Unauthenticated"
+          },
+          "403" : {
+            "description" : "Caller lacks ROLE_ADMIN"
+          },
+          "404" : {
+            "description" : "Queued post not found"
+          },
+          "500" : {
+            "description" : "Unexpected server error"
+          }
+        }
+      }
+    },
+    "/bff/forum/admin/extensions" : {
+      "post" : {
+        "tags" : [ "ForumAdmin" ],
+        "summary" : "Install a phpBB extension (ADMIN ONLY).",
+        "operationId" : "installForumExtension",
+        "parameters" : [ {
+          "name" : "name",
+          "in" : "query",
+          "required" : false,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/InstallBody"
+              }
+            }
+          }
+        },
+        "responses" : {
+          "400" : {
+            "description" : "Name missing or invalid",
+            "content" : { }
+          },
+          "200" : {
+            "description" : "Extension installed",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "401" : {
+            "description" : "Unauthenticated"
+          },
+          "403" : {
+            "description" : "Caller lacks ROLE_ADMIN"
+          },
+          "500" : {
+            "description" : "Unexpected server error"
+          }
+        }
+      }
+    },
+    "/bff/forum/admin/categories" : {
+      "get" : {
+        "tags" : [ "ForumAdmin" ],
+        "summary" : "List forum categories (ADMIN; read-through phpBB; empty when seam dark).",
+        "operationId" : "listForumAdminCategories",
+        "responses" : {
+          "400" : {
+            "description" : "Bad Request",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "200" : {
+            "description" : "Category list returned (empty when phpBB seam is dark)",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "401" : {
+            "description" : "Unauthenticated"
+          },
+          "403" : {
+            "description" : "Caller lacks ROLE_ADMIN"
+          },
+          "500" : {
+            "description" : "Unexpected server error"
+          }
+        }
+      },
+      "post" : {
+        "tags" : [ "ForumAdmin" ],
+        "summary" : "Create a forum category (ADMIN ONLY; audited). 202 when the seam is dark.",
+        "operationId" : "createForumCategory",
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/CreateCategory"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "400" : {
+            "description" : "Validation failed — missing/invalid field",
+            "content" : { }
+          },
+          "200" : {
+            "description" : "Category created in phpBB",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "202" : {
+            "description" : "Pending-reconcile — phpBB seam is dark; action audited",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "401" : {
+            "description" : "Unauthenticated"
+          },
+          "403" : {
+            "description" : "Caller lacks ROLE_ADMIN"
+          },
+          "500" : {
+            "description" : "Unexpected server error"
+          }
+        }
+      }
+    },
+    "/bff/forum/topics/{id}" : {
+      "get" : {
+        "tags" : [ "Forum" ],
+        "summary" : "Get a topic + its replies.",
+        "operationId" : "getForumTopic",
+        "parameters" : [ {
+          "name" : "id",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "integer",
+            "format" : "int64"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "Topic and replies returned (empty maps when seam is dark)",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "401" : {
+            "description" : "Unauthenticated"
+          },
+          "403" : {
+            "description" : "Caller lacks ROLE_FORUM or ROLE_ADMIN"
+          },
+          "500" : {
+            "description" : "Unexpected server error"
+          }
+        }
+      }
+    },
+    "/bff/forum/moderation/queue" : {
+      "get" : {
+        "tags" : [ "ForumModeration" ],
+        "summary" : "View the moderation queue (topics flagged/pending).",
+        "operationId" : "viewForumModerationQueue",
+        "responses" : {
+          "200" : {
+            "description" : "Moderation queue depth and source returned",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "401" : {
+            "description" : "Unauthenticated"
+          },
+          "403" : {
+            "description" : "Caller is not ROLE_ADMIN and does not hold both ROLE_MOD and ROLE_FORUM"
+          },
+          "500" : {
+            "description" : "Unexpected server error"
+          }
+        }
+      }
+    },
+    "/bff/forum/categories" : {
+      "get" : {
+        "tags" : [ "Forum" ],
+        "summary" : "List forum categories.",
+        "operationId" : "listForumCategories",
+        "responses" : {
+          "200" : {
+            "description" : "Category list returned",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "401" : {
+            "description" : "Unauthenticated"
+          },
+          "403" : {
+            "description" : "Caller lacks ROLE_FORUM or ROLE_ADMIN"
+          },
+          "500" : {
+            "description" : "Unexpected server error"
+          }
+        }
+      }
+    },
+    "/bff/forum/admin/users" : {
+      "get" : {
+        "tags" : [ "ForumAdmin" ],
+        "summary" : "List forum users (ADMIN; read-through phpBB; empty when seam dark).",
+        "operationId" : "listForumUsers",
+        "responses" : {
+          "400" : {
+            "description" : "Bad Request",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "200" : {
+            "description" : "User list returned (empty when phpBB seam is dark)",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "401" : {
+            "description" : "Unauthenticated"
+          },
+          "403" : {
+            "description" : "Caller lacks ROLE_ADMIN"
+          },
+          "500" : {
+            "description" : "Unexpected server error"
+          }
+        }
+      }
+    },
+    "/bff/forum/admin/users/{subject}" : {
+      "get" : {
+        "tags" : [ "ForumAdmin" ],
+        "summary" : "Read one forum user by Casdoor sub (ADMIN; empty when seam dark).",
+        "operationId" : "getForumUser",
+        "parameters" : [ {
+          "name" : "subject",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "responses" : {
+          "400" : {
+            "description" : "Bad Request",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "200" : {
+            "description" : "Forum user returned",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/ForumUser"
+                }
+              }
+            }
+          },
+          "204" : {
+            "description" : "User not found in phpBB (seam dark or user absent)",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/ForumUser"
+                }
+              }
+            }
+          },
+          "401" : {
+            "description" : "Unauthenticated"
+          },
+          "403" : {
+            "description" : "Caller lacks ROLE_ADMIN"
+          },
+          "500" : {
+            "description" : "Unexpected server error"
+          }
+        }
+      }
+    },
+    "/bff/forum/admin/stats" : {
+      "get" : {
+        "tags" : [ "ForumAdmin" ],
+        "summary" : "Live forum content stats (topics/posts/active/queue) from the extension.",
+        "operationId" : "getForumAdminStats",
+        "responses" : {
+          "400" : {
+            "description" : "Bad Request",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "200" : {
+            "description" : "Stats returned (may be empty/zero when the phpBB seam is dark)",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/Stats"
+                }
+              }
+            }
+          },
+          "401" : {
+            "description" : "Unauthenticated"
+          },
+          "403" : {
+            "description" : "Caller lacks ROLE_ADMIN"
+          },
+          "500" : {
+            "description" : "Unexpected server error"
+          }
+        }
+      }
+    },
+    "/bff/forum/admin/moderation-queue" : {
+      "get" : {
+        "tags" : [ "ForumAdmin" ],
+        "summary" : "List the moderation queue (ADMIN; read-through phpBB; empty when seam dark).",
+        "operationId" : "listForumAdminModerationQueue",
+        "responses" : {
+          "400" : {
+            "description" : "Bad Request",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "200" : {
+            "description" : "Moderation queue returned (empty when phpBB seam is dark)",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "401" : {
+            "description" : "Unauthenticated"
+          },
+          "403" : {
+            "description" : "Caller lacks ROLE_ADMIN"
+          },
+          "500" : {
+            "description" : "Unexpected server error"
+          }
+        }
+      }
+    },
+    "/bff/forum/admin/audit" : {
+      "get" : {
+        "tags" : [ "ForumAdmin" ],
+        "summary" : "Read the forum_action audit trail (newest-first, server-capped; scoped to the caller's brand; SUPERADMIN sees all).",
+        "operationId" : "getForumAuditTrail",
+        "parameters" : [ {
+          "name" : "limit",
+          "in" : "query",
+          "required" : false,
+          "schema" : {
+            "type" : "integer",
+            "format" : "int32"
+          }
+        } ],
+        "responses" : {
+          "400" : {
+            "description" : "Bad Request",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "200" : {
+            "description" : "Audit trail returned (newest-first, server-capped; domain-scoped; SUPERADMIN sees all)",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "type" : "object"
+                  }
+                }
+              }
+            }
+          },
+          "401" : {
+            "description" : "Unauthenticated"
+          },
+          "403" : {
+            "description" : "Caller lacks ROLE_ADMIN"
+          },
+          "500" : {
+            "description" : "Unexpected server error"
+          }
+        }
+      }
+    }
+  },
+  "components" : {
+    "schemas" : {
+      "UpdateVnProfile" : {
+        "required" : [ "voiceboxStyle" ],
+        "type" : "object",
+        "properties" : {
+          "stickerSlug" : {
+            "pattern" : "^[a-z0-9_-]{1,64}$",
+            "type" : "string"
+          },
+          "characterImgRef" : {
+            "maxLength" : 256,
+            "minLength" : 0,
+            "pattern" : "^/bff/user/(?!.*\\.\\.)[A-Za-z0-9._/-]{1,246}$",
+            "type" : "string"
+          },
+          "voiceboxStyle" : {
+            "minLength" : 1,
+            "pattern" : "^(classic|glass|retro|neon|paper)$",
+            "type" : "string"
+          },
+          "voiceboxAccent" : {
+            "pattern" : "^#[0-9a-f]{6}$",
+            "type" : "string"
+          },
+          "voiceStyle" : {
+            "pattern" : "^(warm|bright|deep|soft|robot)$",
+            "type" : "string"
+          }
+        }
+      },
+      "VnProfile" : {
+        "type" : "object",
+        "properties" : {
+          "subject" : {
+            "type" : "string"
+          },
+          "stickerSlug" : {
+            "type" : "string"
+          },
+          "characterImgRef" : {
+            "type" : "string"
+          },
+          "voiceboxStyle" : {
+            "type" : "string"
+          },
+          "voiceboxAccent" : {
+            "type" : "string"
+          },
+          "voiceStyle" : {
+            "type" : "string"
+          }
+        }
+      },
+      "EditPost" : {
+        "required" : [ "body" ],
+        "type" : "object",
+        "properties" : {
+          "body" : {
+            "maxLength" : 64000,
+            "minLength" : 0,
+            "type" : "string"
+          }
+        }
+      },
+      "VnLookupRequest" : {
+        "required" : [ "subjects" ],
+        "type" : "object",
+        "properties" : {
+          "subjects" : {
+            "maxItems" : 50,
+            "minItems" : 1,
+            "type" : "array",
+            "items" : {
+              "type" : "string"
+            }
+          }
+        }
+      },
+      "VnLookupResponse" : {
+        "type" : "object",
+        "properties" : {
+          "profiles" : {
+            "type" : "object",
+            "additionalProperties" : {
+              "$ref" : "#/components/schemas/VnProfileView"
+            }
+          }
+        }
+      },
+      "VnProfileView" : {
+        "type" : "object",
+        "properties" : {
+          "stickerSlug" : {
+            "type" : "string"
+          },
+          "characterImgRef" : {
+            "type" : "string"
+          },
+          "voiceboxStyle" : {
+            "type" : "string"
+          },
+          "voiceboxAccent" : {
+            "type" : "string"
+          },
+          "voiceStyle" : {
+            "type" : "string"
+          }
+        }
+      },
+      "CreateTopic" : {
+        "required" : [ "body", "title" ],
+        "type" : "object",
+        "properties" : {
+          "categoryId" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "title" : {
+            "maxLength" : 255,
+            "minLength" : 0,
+            "type" : "string"
+          },
+          "body" : {
+            "maxLength" : 64000,
+            "minLength" : 0,
+            "type" : "string"
+          }
+        }
+      },
+      "CreateReply" : {
+        "required" : [ "body" ],
+        "type" : "object",
+        "properties" : {
+          "body" : {
+            "maxLength" : 64000,
+            "minLength" : 0,
+            "type" : "string"
+          }
+        }
+      },
+      "ModerationAction" : {
+        "required" : [ "action" ],
+        "type" : "object",
+        "properties" : {
+          "action" : {
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "reason" : {
+            "type" : "string"
+          }
+        }
+      },
+      "GroupBody" : {
+        "required" : [ "group" ],
+        "type" : "object",
+        "properties" : {
+          "group" : {
+            "maxLength" : 64,
+            "minLength" : 0,
+            "type" : "string"
+          }
+        }
+      },
+      "BanBody" : {
+        "type" : "object",
+        "properties" : {
+          "reason" : {
+            "maxLength" : 1000,
+            "minLength" : 0,
+            "type" : "string"
+          }
+        }
+      },
+      "InstallBody" : {
+        "required" : [ "name" ],
+        "type" : "object",
+        "properties" : {
+          "name" : {
+            "maxLength" : 255,
+            "minLength" : 0,
+            "type" : "string"
+          }
+        }
+      },
+      "CreateCategory" : {
+        "required" : [ "name" ],
+        "type" : "object",
+        "properties" : {
+          "name" : {
+            "maxLength" : 255,
+            "minLength" : 0,
+            "type" : "string"
+          },
+          "description" : {
+            "maxLength" : 4000,
+            "minLength" : 0,
+            "type" : "string"
+          },
+          "parentId" : {
+            "type" : "integer",
+            "format" : "int64"
+          }
+        }
+      },
+      "ForumUser" : {
+        "type" : "object",
+        "properties" : {
+          "casdoorSubject" : {
+            "type" : "string"
+          },
+          "phpbbUserId" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "group" : {
+            "type" : "string"
+          }
+        }
+      },
+      "Stats" : {
+        "type" : "object",
+        "properties" : {
+          "topics" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "posts" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "activeUsers" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "moderationQueueDepth" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "source" : {
+            "type" : "string"
+          }
+        }
+      }
+    }
+  }
+}

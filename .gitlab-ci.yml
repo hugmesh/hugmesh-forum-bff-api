@@ -1,0 +1,128 @@
+# HugMesh CI — build + push this service's container image to the in-cluster
+# GitLab container registry. The GitHub repo is pull-mirrored into in-cluster
+# GitLab (mirror_trigger_builds=true), so this runs on push / mirror-sync on the
+# privileged x86 runner (shell executor with docker, matching the generator CI).
+# Images carry NO keys — KEYS material is supplied from the USB at first boot.
+#
+# The centralized OWASP pen-test stage is pulled from the generator's single
+# source of truth (tests/pentest/ci/pentest-stage.gitlab-ci.yml): it carries the
+# hidden `.pentest-sca` (Dependency-Check SCA) + `.pentest-dast-baseline`
+# (authenticated ZAP DAST + custom probes/nuclei harness) jobs. The thin
+# `pentest:sca` / `pentest:dast` jobs below `extends:` those. The previously
+# inline `dependency-check` SCA job has been MIGRATED onto `.pentest-sca` (via
+# `pentest:sca`) so there is ONE SCA source of truth + the full DAST harness now
+# runs. Onboarding stays additive: build/test stays intact.
+include:
+  - project: 'HugMesh/hugmesh-generator'
+    ref: main
+    file: '/tests/pentest/ci/pentest-stage.gitlab-ci.yml'
+
+stages: [test, security, build, pentest]
+
+test:
+  stage: test
+  tags: [hugmesh-x86, privileged]
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_TAG'
+  variables:
+    # Testcontainers (Spring Boot 4 full-context tests run against a REAL Postgres
+    # container via the shared commons PostgresTestSupport). The inner Maven container
+    # talks to the host Docker daemon over the mounted /var/run/docker.sock, so point
+    # Testcontainers at it and disable Ryuk (the privileged shell runner reaps the
+    # short-lived containers itself; Ryuk's own container is unnecessary and can race
+    # on the socket-share). MAVEN_OPTS carries the docker-java API-version system
+    # property this build host's docker-java needs (env DOCKER_API_VERSION does NOT
+    # work — only the -Dapi.version sysprop does).
+    DOCKER_HOST: "unix:///var/run/docker.sock"
+    TESTCONTAINERS_RYUK_DISABLED: "true"
+    MAVEN_OPTS: "-Dapi.version=1.43"
+  script:
+    # hugmesh-commons (and hugmesh-parent) are PRIVATE — NOT on Maven Central.
+    # The committed settings.xml resolves them from the org GitLab group Maven
+    # registry, authenticated by the GitLab-injected CI_JOB_TOKEN. CI_API_V4_URL is
+    # GitLab-injected; GITLAB_GROUP_ID is a group/CI variable (the HugMesh
+    # group id). `-s settings.xml` points Maven at that registry; the env vars
+    # are forwarded into the build container (NO secret is committed — only the
+    # ${env.*} placeholders in settings.xml).
+    #
+    # The workspace is mounted READ-WRITE (Maven writes target/ + the OpenApiSpecDumpTest
+    # refreshes the spec) and the host Docker socket is bind-mounted IN so the
+    # Testcontainers-backed full-context tests can start the Postgres container against
+    # the host daemon. DOCKER_HOST / TESTCONTAINERS_RYUK_DISABLED / MAVEN_OPTS are
+    # forwarded from the job `variables:` above.
+    - >
+      docker run --rm -v "${CI_PROJECT_DIR}:/workspace" -w /workspace
+      -v /var/run/docker.sock:/var/run/docker.sock
+      -e CI_JOB_TOKEN -e CI_API_V4_URL -e GITLAB_GROUP_ID
+      -e DOCKER_HOST -e TESTCONTAINERS_RYUK_DISABLED -e MAVEN_OPTS
+      eclipse-temurin:25-jdk-noble ./mvnw verify -B -s settings.xml
+  artifacts:
+    when: always
+    reports:
+      junit: target/surefire-reports/TEST-*.xml
+    paths:
+      - target/surefire-reports/
+    expire_in: 7 days
+
+build:image:
+  stage: build
+  needs: [test]
+  tags: [hugmesh-x86, privileged]
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_COMMIT_TAG'
+  variables:
+    # BuildKit is required for the Dockerfile's `--mount=type=secret` private-dep
+    # resolution (hugmesh-commons from the GitLab Maven registry).
+    DOCKER_BUILDKIT: "1"
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    # Immutable tag = release tag or git SHA; plus a moving branch tag the deploy/
+    # kustomize can track for dev.
+    - export TAG="${CI_COMMIT_TAG:-$CI_COMMIT_SHORT_SHA}"
+    # CI_JOB_TOKEN is passed as a BuildKit SECRET (never persisted in a layer); the
+    # GitLab registry coordinates go in as build-args so the committed settings.xml
+    # can resolve the PRIVATE hugmesh-commons artifact during `./mvnw package`
+    # inside the build stage. GITLAB_GROUP_ID must be set to the HugMesh
+    # group id (a CI/CD or group variable).
+    - |
+      docker build --pull \
+        --secret id=ci_job_token,env=CI_JOB_TOKEN \
+        --build-arg CI_API_V4_URL="$CI_API_V4_URL" \
+        --build-arg GITLAB_GROUP_ID="$GITLAB_GROUP_ID" \
+        -t "$CI_REGISTRY_IMAGE:$TAG" -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" .
+    - docker push "$CI_REGISTRY_IMAGE:$TAG"
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG"
+
+# -----------------------------------------------------------------------------
+# Pen-test stage (centralized; single source of truth = generator
+# tests/pentest/ci/pentest-stage.gitlab-ci.yml).
+#
+# pentest:sca  — OWASP Dependency-Check SCA over THIS repo. This REPLACES the
+# previously inline `dependency-check` job: the inline docker/dependency-check
+# script is migrated onto the hidden `.pentest-sca` (which runs the same
+# Dependency-Check engine, NVD-cached, with SARIF for the MR security widget).
+# `make pentest` runs the repo-local mirror of this scan.
+#
+# pentest:dast — authenticated OWASP ZAP baseline DAST + custom probes/nuclei
+# via the shared harness (run-pentest.sh). New coverage for this repo.
+#
+# Both are allow_failure (non-blocking) and gated to default-branch + MR, the
+# same posture as the repo's prior security jobs. The `.pentest-*` bases already
+# declare `stage: pentest`.
+# -----------------------------------------------------------------------------
+pentest:sca:
+  extends: .pentest-sca
+  allow_failure: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+pentest:dast:
+  extends: .pentest-dast-baseline
+  allow_failure: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'

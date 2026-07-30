@@ -1,0 +1,25 @@
+# Full-context test profile. The DB (R2DBC for the app + JDBC for Liquibase) is a
+# REAL Postgres container wired by Testcontainers in the shared
+# systems.hugmesh.commons.testsupport.PostgresTestSupport base — NO H2 here (the
+# @DataR2dbcTest slices still use H2 via TestDatabaseConfig, and those slices do NOT
+# load this profile). The base's DynamicPropertySource supplies the r2dbc URL + the
+# Liquibase JDBC URL pointed at the SAME per-class database, so Liquibase migrates the
+# schema the repositories then read.
+#
+# spring.r2dbc.url / spring.liquibase.url are deliberately ABSENT (the base supplies
+# them). Under Spring Boot 4 the two production autoconfigs MUST stay ENABLED so the
+# base's URLs are honoured — the old Boot-3.5 spring.autoconfigure.exclude of the
+# r2dbc/liquibase autoconfigs (which provided H2 by hand) is dropped. The context-load
+# test runs a JWT-decoder mock so no live Casdoor is needed; the phpBB extension call +
+# the ban congruence stay STUBBED.
+spring:
+  liquibase:
+    enabled: true
+    change-log: "classpath:db/changelog/db.changelog-master.xml"
+
+phpbb:
+  enabled: false
+
+external:
+  forum:
+    enabled: false

@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+            http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.29.xsd">
+
+    <!--
+        003 — DOMAIN SCOPING (multi-tenant / multi-brand foundation).
+
+        The forum admin/mod surfaces operate on per-domain request-scoped data — the
+        forum_action audit trail and the forum_user_role binding cache. Each gains a
+        `domain` column = the brand/tenant the row belongs to, derived SERVER-SIDE
+        from the token's cryptographically-validated issuer (DOMAIN_<x>) — NEVER from
+        a request field. A forum admin/mod of brand X only ever sees/mutates rows in
+        its OWN domain (the service + repo layers add a `domain = :domain` predicate
+        alongside the existing actor/subject keying); SUPERADMIN (the cross-domain
+        infra super-role) is unscoped and sees every brand's rows.
+
+        BACK-COMPAT: the column is NOT NULL with DEFAULT 'default'. Existing rows
+        backfill to 'default' and a single-issuer cluster (DomainRegistry maps the
+        lone issuer / no config -> DOMAIN_default) writes 'default' for every row, so
+        nothing changes for a single-tenant deployment. The owner==JWT-subject
+        invariant (assertOwnerOrAdmin) is UNWEAKENED — domain is an ADDITIONAL
+        predicate, never a replacement.
+
+        Tables scoped:
+          • forum_user_role  (the binding cache, keyed by casdoor_subject)
+          • forum_action     (the OWN audit trail; actor_subject + target)
+
+        DEFAULT 'default' + NOT NULL is plain ANSI DDL that runs identically on
+        production Postgres AND the H2 PostgreSQL-compat slice DB. Each addColumn has
+        an implicit Liquibase rollback (drop column).
+    -->
+
+    <changeSet id="003-1-forum-user-role-domain" author="hugmesh">
+        <addColumn tableName="forum_user_role">
+            <column name="domain" type="varchar(64)" defaultValue="default">
+                <constraints nullable="false"/>
+            </column>
+        </addColumn>
+    </changeSet>
+
+    <changeSet id="003-2-forum-action-domain" author="hugmesh">
+        <addColumn tableName="forum_action">
+            <column name="domain" type="varchar(64)" defaultValue="default">
+                <constraints nullable="false"/>
+            </column>
+        </addColumn>
+        <!-- The domain-scoped audit list is the hot read path for a per-brand admin
+             reading its own forum_action trail; index (domain, created_at) so the
+             per-domain newest-first scan does not table-scan on a busy multi-brand
+             instance. -->
+        <createIndex tableName="forum_action" indexName="idx_forum_action_domain_created">
+            <column name="domain"/>
+            <column name="created_at"/>
+        </createIndex>
+    </changeSet>
+</databaseChangeLog>

@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+            http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.29.xsd">
+
+    <!--
+        005 — forum_vn_profile: the visual-novel reading-mode profile, keyed by the
+        IMMUTABLE Casdoor sub (the same natural-PK decision as forum_user_role,
+        changelog 001 — NEVER localpart; sub is the only collision-safe key). One row
+        per user carrying the presentation the VN reader renders for that author:
+        sticker, character image reference, voicebox style/accent, voice style.
+
+        The `domain` column follows changelog 003 EXACTLY (forum_user_role): the
+        brand/tenant the row belongs to, derived SERVER-SIDE from the token's
+        cryptographically-validated issuer — NEVER a request field. NOT NULL with
+        DEFAULT 'default' so a single-issuer cluster (DomainRegistry maps the lone
+        issuer -> DOMAIN_default) writes 'default' for every row and single-tenant
+        deployments are unchanged. casdoor_subject stays the globally-unique PK;
+        domain is an ADDITIONAL read predicate, never the key. SUPERADMIN (null
+        scope) is unscoped.
+
+        character_img_ref is validated at the API layer to a strict same-origin
+        "/bff/user/..." path allowlist (it is rendered as an <img src>); the column
+        just bounds it to 256 chars. voicebox_style is server-validated to the
+        [classic|glass|retro|neon|paper] allowlist, DEFAULT 'classic' (the synthesized
+        default the GET /me contract promises). voicebox_accent is a "#rrggbb" hex
+        (7 chars). Plain ANSI DDL — runs identically on production Postgres AND the H2
+        PostgreSQL-compat slice DB. createTable has an implicit Liquibase rollback.
+    -->
+
+    <changeSet id="005-vn-profile" author="hugmesh">
+        <createTable tableName="forum_vn_profile">
+            <column name="casdoor_subject" type="varchar(255)">
+                <constraints primaryKey="true" nullable="false" unique="true"/>
+            </column>
+            <column name="domain" type="varchar(64)" defaultValue="default">
+                <constraints nullable="false"/>
+            </column>
+            <column name="sticker_slug" type="varchar(64)"/>
+            <column name="character_img_ref" type="varchar(256)"/>
+            <column name="voicebox_style" type="varchar(16)" defaultValue="classic">
+                <constraints nullable="false"/>
+            </column>
+            <column name="voicebox_accent" type="varchar(7)"/>
+            <column name="voice_style" type="varchar(16)"/>
+            <!-- "timestamp with time zone" renders as timestamptz on Postgres and is
+                 equally valid on the H2 PostgreSQL-compat slice DB (the raw
+                 "timestamptz" alias is Postgres-only spelling). -->
+            <column name="updated_at" type="timestamp with time zone" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+    </changeSet>
+</databaseChangeLog>

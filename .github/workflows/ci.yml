@@ -1,0 +1,70 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# GitHub-side COMPILE + TEST GATE  (exemplar — roll out to every Java service repo)
+#
+# WHY THIS EXISTS
+# Merges happen on GitHub (`gh pr merge`), but the existing test pipeline runs on the
+# in-cluster GitLab mirror (.gitlab-ci.yml) — and GitHub never waits for GitLab. So a
+# PR can merge with a BROKEN main and GitLab only fails afterwards. That is exactly how
+# forum-bff main went non-compiling for a while (a static-analysis cleanup dropped a
+# `ClientResponse` import; the build failed only post-merge on GitLab; PR #34 fixed it).
+# This workflow makes the compile + test a REQUIRED, merge-blocking GitHub status check.
+#
+# RUNNER — must be SELF-HOSTED in-cluster (tailnet).
+# The private deps (hugmesh-parent / hugmesh-commons) live ONLY in the in-cluster
+# GitLab group Maven registry, which a github.com-hosted runner cannot reach (Tailscale-
+# only). So this runs on a self-hosted runner registered to the repo/org that sits on the
+# tailnet and has Docker (for the Testcontainers full-context tests) — the same host class
+# as the GitLab `hugmesh-x86` runner. (ALTERNATIVE if you prefer github-hosted runners:
+# publish hugmesh-parent + hugmesh-commons to GitHub Packages and point settings.xml
+# at it with GITHUB_TOKEN — a bigger change to those two repos + every consumer's settings.xml.)
+#
+# PREREQS (one-time, per the org / repo settings — I cannot set these, they are yours):
+#   1. Register a self-hosted runner (labels: self-hosted, hugmesh-x86) on the tailnet
+#      with Docker available (mirrors the GitLab privileged shell runner).
+#   2. Add repo/org SECRETS that map to the settings.xml ${env.*} placeholders:
+#        GITLAB_MAVEN_TOKEN  -> a read-scoped token for the GitLab group Maven registry
+#        GITLAB_API_V4_URL   -> the in-cluster GitLab API v4 URL (e.g. https://gitlab.<tailnet>/api/v4)
+#        GITLAB_GROUP_ID     -> the HugMesh GitLab group id
+#   3. Branch protection on `main`: require the "build" check below to pass before merge
+#      (Settings → Branches → Protect main → Require status checks → select "build").
+# ─────────────────────────────────────────────────────────────────────────────
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel a superseded run when a PR is updated, so the gate always reflects the latest commit.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Self-hosted, in-cluster (tailnet) — see the RUNNER note above. Has Docker for Testcontainers.
+    runs-on: [self-hosted, hugmesh-x86]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 25 (matches the GitLab CI eclipse-temurin:25 image)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      # `mvnw verify` compiles main + test sources AND runs the suite. The compile phase
+      # alone catches the broken-import class that slipped through before; `verify` also
+      # runs the Testcontainers full-context tests against the host Docker daemon (Ryuk
+      # disabled — the runner reaps its own short-lived containers, matching .gitlab-ci.yml).
+      # settings.xml resolves the private hugmesh-parent/commons from the GitLab group
+      # Maven registry via the secrets mapped to its ${env.*} placeholders (NO secret in git).
+      - name: Build + test (merge gate)
+        env:
+          CI_JOB_TOKEN: ${{ secrets.GITLAB_MAVEN_TOKEN }}
+          CI_API_V4_URL: ${{ secrets.GITLAB_API_V4_URL }}
+          GITLAB_GROUP_ID: ${{ secrets.GITLAB_GROUP_ID }}
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+          MAVEN_OPTS: "-Dapi.version=1.43"
+        run: ./mvnw -B -s settings.xml clean verify

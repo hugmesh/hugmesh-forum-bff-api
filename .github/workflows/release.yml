@@ -1,0 +1,72 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Release: build + publish the container image to GHCR.
+#
+# INERT BY DESIGN — trigger is `workflow_dispatch` only (no `push`/`tags`), so
+# this never runs on its own. A human flips it on (adds a push/tag trigger)
+# once the org is ready to cut real releases.
+#
+# Modeled on this repo's `.gitlab-ci.yml` `build:image` job: same multi-stage
+# Dockerfile, same BuildKit secret + build-args for resolving the private
+# hugmesh-commons/hugmesh-parent Maven artifacts during `./mvnw package`.
+# Only the registry destination differs (GHCR instead of the in-cluster
+# GitLab container registry).
+#
+# PREREQS (one-time, org/repo settings — not something this workflow can set):
+#   - Repo/org secrets mirroring the ones ci.yml already documents:
+#       GITLAB_MAVEN_TOKEN  -> read-scoped token for the GitLab group Maven registry
+#                              (passed into the image build as the BuildKit
+#                              `ci_job_token` secret; never an ARG/ENV/layer)
+#       GITLAB_API_V4_URL   -> the in-cluster GitLab API v4 URL
+#       GITLAB_GROUP_ID     -> the HugMesh GitLab group id
+#   - `packages: write` is granted below via GITHUB_TOKEN; no extra PAT needed
+#     to push to this repo's own GHCR package.
+# ─────────────────────────────────────────────────────────────────────────────
+name: Release
+
+on:
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/hugmesh-net/hugmesh-forum-bff-api
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tag
+        id: meta
+        run: echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      # Mirrors the GitLab `build:image` job: CI_JOB_TOKEN goes in as a BuildKit
+      # secret (never persisted in a layer); CI_API_V4_URL / GITLAB_GROUP_ID go
+      # in as build-args so the committed settings.xml can resolve the private
+      # hugmesh-commons artifact during `./mvnw package` inside the build stage.
+      - name: Build + push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          pull: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+            ${{ env.IMAGE }}:latest
+          secrets: |
+            ci_job_token=${{ secrets.GITLAB_MAVEN_TOKEN }}
+          build-args: |
+            CI_API_V4_URL=${{ secrets.GITLAB_API_V4_URL }}
+            GITLAB_GROUP_ID=${{ secrets.GITLAB_GROUP_ID }}

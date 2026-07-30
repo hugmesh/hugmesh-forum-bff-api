@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SpotBugs exclude filter for hugmesh-forum-bff-api.
+
+  EI_EXPOSE_REP2 fires on every standard Spring constructor-injection site that
+  stores an injected collaborator (WebClient / R2dbcRepository / service bean)
+  into a final field — the idiomatic Spring DI pattern. SpotBugs' default rule
+  can't distinguish "caller-owned mutable state leaking out" from "framework
+  hands us a singleton bean to hold onto", so it flags this pattern by default
+  absent an exclude filter. There is no reasonable "fix" for these sites (a
+  defensive copy of a WebClient/repository/service bean is nonsensical), so the
+  bug pattern is suppressed repo-wide rather than churning @SuppressFBWarnings
+  annotations across every constructor.
+-->
+<FindBugsFilter>
+  <Match>
+    <Bug pattern="EI_EXPOSE_REP2"/>
+  </Match>
+</FindBugsFilter>

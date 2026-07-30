@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+            http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.29.xsd">
+
+    <!--
+      DB-GENERATED UUID PRIMARY KEYS — the org-wide migration (exemplars: merged
+      mod-bff #36, changelog 009-mod-action-db-generated-id.xml; and admin-bff #133,
+      changelog 200-db-generated-uuid-pks.xml).
+
+      Decision (pinned): stop minting UUID primary keys in Java
+      (UUID.randomUUID().toString()); let Postgres generate them via a column DEFAULT
+      and read the generated id back on insert (INSERT ... RETURNING id). The column
+      type and the entity @Id type are UNCHANGED — only the SOURCE of the id moves from
+      the app to the database.
+
+      forum_action.id is a varchar(36) string PK that was minted in Java as
+      UUID.randomUUID().toString(). For a varchar id the DB default casts the native
+      uuid to text — (gen_random_uuid())::text — which yields the lowercase 36-char
+      hyphenated form, BYTE-IDENTICAL to UUID.randomUUID().toString(). The column type +
+      the entity @Id type stay String; only the id SOURCE moves to the DB. The
+      ForumActionR2dbcRepository INSERT now OMITS id and RETURNING id reads the generated
+      string back.
+
+      forum_user_role uses a NATURAL casdoor_subject PK (changelog 001) — NOT a minted
+      UUID — so it is deliberately left untouched.
+
+      This is the reason the affected @DataR2dbcTest slice (ForumActionRepositoryTest)
+      moves off the H2 PostgreSQL-compat store (TestDatabaseConfig) to
+      Testcontainers-Postgres (PostgresSliceTestConfig over the commons
+      PostgresTestSupport container): H2 has neither pgcrypto nor a reliable
+      INSERT ... RETURNING, so the prod changelog can no longer be applied over the H2
+      store.
+
+      Numbered 004 — a band ABOVE the current max (003-domain-scoping). Registered LAST
+      in db.changelog-master.xml.
+    -->
+
+    <!-- FIRST: ensure gen_random_uuid() is available. Built-in on PG13+, but install
+         pgcrypto defensively (idempotent + harmless if already present) — mirrors the
+         mod-bff/admin-bff exemplars. Gated to PostgreSQL (the test store IS Postgres and
+         the production runtime is Postgres). -->
+    <changeSet id="004-pgcrypto-extension" author="hugmesh">
+        <preConditions onFail="MARK_RAN" onError="MARK_RAN">
+            <dbms type="postgresql"/>
+        </preConditions>
+        <comment>Install pgcrypto so gen_random_uuid() is available as the
+                 forum_action.id column DEFAULT. IF NOT EXISTS — idempotent.</comment>
+        <sql>CREATE EXTENSION IF NOT EXISTS pgcrypto;</sql>
+    </changeSet>
+
+    <!-- forum_action.id (varchar(36), changelog 002): DB-generate via
+         (gen_random_uuid())::text instead of ForumActionRepository minting
+         UUID.randomUUID().toString(). The column stays varchar(36) PK; the repository
+         INSERT omits id and RETURNING id reads the generated string back. -->
+    <changeSet id="004-gen-uuid-forum_action" author="hugmesh">
+        <comment>DB-generate forum_action.id ((gen_random_uuid())::text) instead of the
+                 app minting it; INSERT omits id, RETURNING id reads it back.</comment>
+        <addDefaultValue tableName="forum_action"
+                         columnName="id"
+                         columnDataType="varchar(36)"
+                         defaultValueComputed="(gen_random_uuid())::text"/>
+    </changeSet>
+
+</databaseChangeLog>

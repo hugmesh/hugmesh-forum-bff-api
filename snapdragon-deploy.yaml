@@ -1,0 +1,33 @@
+# hugmesh-deploy.yaml — per-repo deploy descriptor (Phase 6 catalog). Filename
+# kept literal (not renamed to hugmesh-deploy.yaml): the catalog ApplicationSet's
+# scmProvider discovery convention matches on this exact filename (owned by
+# hugmesh-generator, currently unseeded/inert — see below), so renaming it without
+# a matching scanner-config change would silently drop this repo from discovery
+# once the Forgejo catalog goes live.
+#
+# Discovered by the catalog ApplicationSet (hugmesh-generator
+# specs/cluster/apps/13-service-catalog.yaml): its scmProvider gitea generator
+# scans the in-cluster Forgejo org for repos carrying THIS file + a `deploy/`
+# kustomize dir and generates one ArgoCD Application (source path: deploy/).
+#
+# DUAL-HOME / SHIPS DARK: the central manifest still lives at
+# hugmesh-generator specs/cluster/manifests/forum-bff-api/ and remains the
+# authoritative source today. This file + deploy/ are a Forgejo-cutover PILOT:
+# the live GitHub-rooted ArgoCD ignores it, and the (currently unseeded) Forgejo
+# catalog matches nothing, so it changes nothing running. deploy/ is a verbatim
+# copy of the central manifest — keep the two in sync until cutover.
+name: hugmesh-forum-bff-api          # Application name
+namespace: hugmesh-backend        # target k8s namespace (existing tier ns) — left
+                                      # unchanged, real cluster namespace (see safety notes)
+image: hugmesh-systems/forum-bff-api # image repo (tag pinned in deploy/ kustomize)
+port: 8080
+replicas: 1
+# Gateway route the admin/BFF seeds into the routing DB (Phase 2 core). The forum
+# BFF is ClusterIP-only and reachable solely via the fe-gateway's same-origin
+# /bff/forum/** route, which enforces ROLE_FORUM from the route DB (with the
+# admin-only /bff/forum/admin/** and derived /bff/forum/moderation/** rows layered
+# on top). It is the SINGLE browser->phpBB path.
+route:
+  gateway: hugmesh-fe-gateway
+  path: /bff/forum/**
+  stripPrefix: 0

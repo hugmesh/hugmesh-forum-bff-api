@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+            http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.29.xsd">
+
+    <!-- forum_action: forum-bff's OWN audit table — every forum admin/congruence action
+         (ban/unban/style.install/extension.install) is recorded here regardless of the
+         external phpBB outcome (ok / stubbed / degraded), so a STUBBED phpBB ban is still
+         fully auditable. This deliberately does NOT reuse / widen the hugmesh-mod-bff-api
+         mod_action table or its ck_mod_action_platform CHECK — the design is explicit that
+         forum audit uses its OWN table; mod-bff is never touched.
+
+         id is app-generated (UUID) so the INSERT is portable (Postgres + H2) and the new
+         row's id can be returned. outcome carries {ok|stubbed|degraded:<reason>}. -->
+    <changeSet id="002-forum-audit" author="hugmesh">
+        <createTable tableName="forum_action">
+            <column name="id" type="varchar(64)">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="actor_subject" type="varchar(255)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="action" type="varchar(64)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="target" type="varchar(512)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="outcome" type="varchar(64)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="detail" type="varchar(2000)"/>
+            <column name="created_at" type="timestamp" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+    </changeSet>
+</databaseChangeLog>

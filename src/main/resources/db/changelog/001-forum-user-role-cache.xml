@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+            http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.29.xsd">
+
+    <!-- forum_user_role: the phpBB user binding cache, keyed by the IMMUTABLE Casdoor
+         sub (NOT localpart — two identity providers can yield the same localpart, so
+         sub is the only collision-safe uniqueness key). Holds the resolved phpBB user
+         id, the last computed group membership ({ADMINISTRATORS|GLOBAL_MODERATORS|
+         REGISTERED|NONE}), and last_synced so the declarative setUserGroups can resolve
+         the lazy-vs-reconcile race (last-writer-by-Casdoor-time wins). -->
+    <changeSet id="001-forum-user-role-cache" author="hugmesh">
+        <createTable tableName="forum_user_role">
+            <column name="casdoor_subject" type="varchar(255)">
+                <constraints primaryKey="true" nullable="false" unique="true"/>
+            </column>
+            <column name="phpbb_user_id" type="bigint"/>
+            <column name="group_membership" type="varchar(32)"/>
+            <column name="last_synced" type="timestamp" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+    </changeSet>
+</databaseChangeLog>
