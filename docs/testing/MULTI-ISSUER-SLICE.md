@@ -16,12 +16,12 @@ entirely offline.
 
 ## Shared test infrastructure
 
-- `src/test/java/systems/hugmesh/forumbff/testsupport/TestIssuer.java` — mints
+- `src/test/java/net/hugmesh/forumbff/testsupport/TestIssuer.java` — mints
   issuer-specific RS256 JWTs against an in-process JWKS. Shared verbatim across the
   BFF family (only the package declaration differs per repo). Its only dependency
   is `nimbus-jose-jwt`, pulled in transitively via
   `spring-boot-starter-oauth2-resource-server`.
-- `src/test/java/systems/hugmesh/forumbff/config/SecuritySliceSupport.java` —
+- `src/test/java/net/hugmesh/forumbff/config/SecuritySliceSupport.java` —
   builds this repo's real `SecurityConfig` filter chain into a `WebTestClient`,
   without booting a full Spring Boot context. It's adapted to this repo's
   `SecurityConfig(DomainRegistry, ObjectProvider<...>)` constructor shape and its

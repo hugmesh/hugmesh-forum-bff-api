@@ -12,10 +12,10 @@ resources:
 # (ESO-materialized, see manifests/external-secrets).
 images:
   # newName kept pointing at the REAL, currently-published GitLab registry path
-  # (registry.hugmesh.systems/hugmesh/hugmesh-forum-bff-api) — the GitLab
+  # (registry.hugmesh.net/hugmesh/hugmesh-forum-bff-api) — the GitLab
   # group/project has not been renamed yet, so retargeting this to a hugmesh/ path
   # would break every image pull until that migration lands. See PR notes.
-  - { name: hugmesh-systems/forum-bff-api, newName: registry.hugmesh.systems/hugmesh/hugmesh-forum-bff-api, newTag: main }
+  - { name: hugmesh-systems/forum-bff-api, newName: registry.hugmesh.net/hugmesh/hugmesh-forum-bff-api, newTag: main }
 patches:
   - target: { kind: Deployment }
     patch: |

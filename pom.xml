@@ -45,7 +45,7 @@
     </dependency>
 
     <!-- The hugmesh-commons TEST-JAR — supplies the shared full-context test base
-         systems.hugmesh.commons.testsupport.PostgresTestSupport (a singleton
+         net.hugmesh.commons.testsupport.PostgresTestSupport (a singleton
          Testcontainers Postgres + a fresh per-class logical DB + r2dbc/Liquibase
          DynamicPropertySource wiring). The full-context @SpringBootTest classes extend
          it instead of the old dual-handle in-mem H2 (which stopped sharing its store
