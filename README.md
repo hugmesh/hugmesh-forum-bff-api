@@ -12,7 +12,7 @@ event loop) + R2DBC for runtime data access. JDBC is used **only** for Liquibase
 migrations. Casdoor JWT OAuth2 resource server, springdoc-openapi (webflux-ui),
 resilience4j circuit breakers, Spring-Native-ready, Java 25, Spring Boot 4.0.7.
 
-Maven artifact: `forum-bff` version `0.2.0` (package `systems.hugmesh.forumbff`). The
+Maven artifact: `forum-bff` version `0.2.0` (package `net.hugmesh.forumbff`). The
 `-api` suffix appears only in the repo/service/image name, not the artifact ID.
 
 > **Status legend used throughout this README:** ✅ shipped on `main` · 🚧 in-flight
@@ -450,7 +450,7 @@ missing `ADMIN>MOD` edge) is documented separately in
 This service builds on the org's shared Maven artifacts, which eliminate duplicated
 security/tenancy code that used to exist separately across each BFF:
 
-1. **Parent POM** — `systems.hugmesh:hugmesh-parent:2.8.0`, itself a child of
+1. **Parent POM** — `net.hugmesh:hugmesh-parent:2.8.0`, itself a child of
    `spring-boot-starter-parent:4.0.7`, so the full Spring Boot dependency- and
    plugin-management tree is inherited transitively, along with the Testcontainers
    BOM, H2/R2DBC-H2 pins, and the Liquibase starter. The parent also consolidates
@@ -460,7 +460,7 @@ security/tenancy code that used to exist separately across each BFF:
    springdoc. Only two repo-specific dependencies remain unmanaged in this POM (the
    resilience4j artifacts).
 
-2. **Shared security/tenancy/web** — `systems.hugmesh:hugmesh-commons:2.1.0`. This
+2. **Shared security/tenancy/web** — `net.hugmesh:hugmesh-commons:2.1.0`. This
    service consumes the following commons classes in place of local copies:
 
    | Local usage | Commons class |
@@ -484,8 +484,8 @@ security/tenancy code that used to exist separately across each BFF:
 
    `config.CommonsSecurityConfig` uses `@Import` to bring in the commons
    `DomainRegistry` and `TenancyResourceServerConfig` beans, since this service's
-   `@SpringBootApplication` component scan covers `systems.hugmesh.forumbff` but not
-   `systems.hugmesh.commons.*`.
+   `@SpringBootApplication` component scan covers `net.hugmesh.forumbff` but not
+   `net.hugmesh.commons.*`.
 
 3. **This BFF does not consume `hugmesh-auth-core`.**
    [`hugmesh-auth-core`](https://github.com/hugmesh-net/hugmesh-auth-core) (shared
@@ -682,7 +682,7 @@ configuration-gated seams and proof-coverage gaps, not incomplete implementation
 - **The `characterImgRef` VN-profile field has no resolvable target yet for the
   one value the paired UI actually writes.** This BFF only validates the *shape* of
   the path it's given (`^/bff/user/(?!.*\.\.)[A-Za-z0-9._/-]{1,246}$`, see
-  [`VnProfileDto`](src/main/java/systems/hugmesh/forumbff/forum/VnProfileDto.java))
+  [`VnProfileDto`](src/main/java/net/hugmesh/forumbff/forum/VnProfileDto.java))
   — it never dereferences it. `hugmesh-forum-ui`'s VN profile editor currently
   writes exactly one value (`/bff/user/character/avatar`), but
   `hugmesh-user-bff-api` has no route at that path today (avatars there are Matrix
