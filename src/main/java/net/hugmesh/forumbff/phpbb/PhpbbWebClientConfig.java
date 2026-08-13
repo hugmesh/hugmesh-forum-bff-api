@@ -177,9 +177,18 @@ public class PhpbbWebClientConfig {
      * are re-attached explicitly (otherwise the JSON would be dropped too).
      */
     private static Mono<ClientResponse> stripCookiesPreserveBody(ClientResponse response) {
+        // mutate() PRESERVES the original body by itself — do NOT re-set it via
+        // response.bodyToFlux(...). Doing so wires the mutated response's body to a
+        // SECOND subscription of the same Reactor Netty inbound, and the first real
+        // JSON 200 through this filter dies with
+        //   IllegalStateException: Rejecting additional inbound receiver
+        // AFTER the extension already answered 200 — reading as an upstream fault.
+        // The bug was invisible for the filter's whole life: with the phpbb seam
+        // dark no call happened at all, and against a board without the extension
+        // every response took the isHtml/error branch, so no JSON body ever
+        // transited here until the real extension came up.
         return Mono.just(response.mutate()
                 .headers(h -> h.remove("Set-Cookie"))
-                .body(response.bodyToFlux(DataBuffer.class))
                 .build());
     }
 }
