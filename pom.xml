@@ -13,12 +13,17 @@
        Spring Boot dependency + plugin management (plus the Testcontainers BOM, the
        r2dbc-h2/h2 pins and the spring-boot-liquibase starter) is inherited TRANSITIVELY. -->
   <parent>
-    <groupId>systems.hugmesh</groupId>
+    <groupId>net.hugmesh</groupId>
     <artifactId>hugmesh-parent</artifactId>
     <version>2.8.0</version>
     <relativePath/>
   </parent>
 
+  <!-- Own coordinate stated EXPLICITLY rather than inherited from <parent>: an
+       omitted <groupId> silently tracks whatever the parent publishes under, which
+       is exactly how this module kept publishing under the OLD reverse-domain
+       coordinate long after its packages had already moved to net.hugmesh. -->
+  <groupId>net.hugmesh</groupId>
   <!-- NO -api suffix in the artifactId (mirrors user-bff/admin-bff): -api is only in
        the repo/service/image name. -->
   <artifactId>forum-bff</artifactId>
@@ -40,7 +45,7 @@
          DomainScope} + config.TenancyResourceServerConfig + web.ApiException. The repo
          KEEPS its own security.{Roles,PrincipalDomain} (extra used API — see README). -->
     <dependency>
-      <groupId>systems.hugmesh</groupId>
+      <groupId>net.hugmesh</groupId>
       <artifactId>hugmesh-commons</artifactId>
     </dependency>
 
@@ -54,7 +59,7 @@
          the parent's dependencyManagement does NOT manage the tests classifier, so the
          <version> must stay explicit here. -->
     <dependency>
-      <groupId>systems.hugmesh</groupId>
+      <groupId>net.hugmesh</groupId>
       <artifactId>hugmesh-commons</artifactId>
       <version>2.1.0</version>
       <classifier>tests</classifier>

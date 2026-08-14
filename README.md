@@ -60,7 +60,7 @@ chain, where each BFF owns exactly one product surface. This repo is the BFF for
   BFF's own database namespace. phpBB has no gateway route of its own; this BFF is
   its sole upstream caller.
 - **Identity:** a Casdoor JWT OAuth2 resource server. `issuer-uri` defaults to
-  `https://id.hugmesh.systems` (overridable via `CASDOOR_ISSUER_URI`).
+  `https://id.hugmesh.net` (overridable via `CASDOOR_ISSUER_URI`).
 - **Sibling repos:** paired UI in
   [`hugmesh-forum-ui`](https://github.com/hugmesh-net/hugmesh-forum-ui); administered
   through [`hugmesh-admin-bff-api`](https://github.com/hugmesh-net/hugmesh-admin-bff-api);
@@ -106,7 +106,7 @@ a strict single-path chain at every hop.
 Every forum request flows through one chain. The browser never contacts phpBB
 directly — its administration panel, native login, and all internal routes are
 unreachable from outside the cluster. There is no `forum.<domain>` subdomain (the
-`*.hugmesh.systems` wildcard would swallow it); the forum UI is served at the apex
+`*.hugmesh.net` wildcard would swallow it); the forum UI is served at the apex
 path `/social/forum`.
 
 ```
@@ -550,7 +550,7 @@ see [`application.yml`](src/main/resources/application.yml) for the full set.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `CASDOOR_ISSUER_URI` | `https://id.hugmesh.systems` | Casdoor OIDC issuer used for JWT validation |
+| `CASDOOR_ISSUER_URI` | `https://id.hugmesh.net` | Casdoor OIDC issuer used for JWT validation |
 | `SPRING_R2DBC_URL` / `_USERNAME` / `_PASSWORD` | in-cluster Postgres DNS | runtime R2DBC datastore |
 | `SPRING_LIQUIBASE_URL` / `_USER` / `_PASSWORD` | same database, JDBC | Liquibase migration connection |
 | `PHPBB_ENABLED` | `false` | enables the real phpBB read/write HTTP seam (`PhpbbApiClient`) |

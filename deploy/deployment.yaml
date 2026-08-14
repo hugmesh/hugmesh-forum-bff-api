@@ -26,14 +26,14 @@ kind: Deployment
 metadata:
   name: hugmesh-forum-bff-api
   namespace: hugmesh-backend
-  labels: { app: hugmesh-forum-bff-api, app.kubernetes.io/part-of: hugmesh.systems }
+  labels: { app: hugmesh-forum-bff-api, app.kubernetes.io/part-of: hugmesh.net }
 spec:
   replicas: 1
   selector: { matchLabels: { app: hugmesh-forum-bff-api } }
   template:
     metadata: { labels: { app: hugmesh-forum-bff-api } }
     spec:
-      nodeSelector: { hugmesh.systems/backend: "true" }
+      nodeSelector: { hugmesh.net/backend: "true" }
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -98,7 +98,7 @@ spec:
             - { name: SSL_TRUST_STORE_TYPE, value: "PKCS12" }
             - { name: SPRING_CONFIG_ADDITIONAL_LOCATION, value: "file:/stores/" }
             # OAuth2 resource server: validate the cluster Casdoor JWT itself.
-            - { name: CASDOOR_ISSUER_URI, value: "https://id.hugmesh.systems" }
+            - { name: CASDOOR_ISSUER_URI, value: "https://id.hugmesh.net" }
             # ── phpBB forum-api extension (the headless upstream) ──────────────
             # The in-cluster phpbb Service DNS in the isolated hugmesh-forum ns.
             # forum-bff presents its client cert + forwards the caller JWT (Bearer +
