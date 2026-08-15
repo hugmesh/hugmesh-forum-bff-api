@@ -6,8 +6,7 @@
     "version" : "0.1.0"
   },
   "servers" : [ {
-    "url" : "http://localhost:42077",
-    "description" : "Generated server url"
+    "url" : ""
   } ],
   "tags" : [ {
     "name" : "ForumModeration",

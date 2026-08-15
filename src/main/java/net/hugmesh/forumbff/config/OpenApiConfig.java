@@ -2,8 +2,11 @@ package net.hugmesh.forumbff.config;
 
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.info.Info;
+import io.swagger.v3.oas.models.servers.Server;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+
+import java.util.List;
 
 /**
  * Minimal OpenAPI document metadata for the forum BFF spec served by
@@ -23,6 +26,14 @@ public class OpenApiConfig {
     @Bean
     OpenAPI forumBffOpenApi() {
         return new OpenAPI()
+                // Pin an empty-URL server so the dumped spec is DETERMINISTIC. Under Boot 4 /
+                // springdoc 3.x the auto-generated "Generated server url" resolves to the live
+                // request host:port — which is a RANDOM_PORT in the OpenApiSpecDumpTest, so the
+                // committed spec would otherwise carry a per-run port (e.g. http://localhost:42077).
+                // Boot 3.5 / springdoc 2.x emitted "" here; pin it to keep the byte-stable artefact.
+                // An empty URL also means same-origin, which is correct for a BFF behind the
+                // fe-gateway — the absolute localhost URL pointed generated clients at a dead port.
+                .servers(List.of(new Server().url("")))
                 .info(new Info()
                         .title("hugmesh-forum-bff-api")
                         .version("0.1.0")
