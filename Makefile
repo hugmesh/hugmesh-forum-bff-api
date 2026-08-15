@@ -17,7 +17,7 @@ USE_DOCKER    ?=
 DAST_TARGET_URL ?=
 # Where to find / fetch the shared pen-test harness (generator tests/pentest).
 PENTEST_HARNESS_DIR ?= ../hugmesh-generator/tests/pentest
-GENERATOR_REPO      ?= https://github.com/hugmesh-net/hugmesh-generator.git
+GENERATOR_REPO      ?= https://github.com/hugmesh/hugmesh-generator.git
 
 .PHONY: pentest pentest-sca pentest-dast
 
