@@ -1,9 +1,25 @@
-# hugmesh-deploy.yaml — per-repo deploy descriptor (Phase 6 catalog). Filename
-# kept literal (not renamed to hugmesh-deploy.yaml): the catalog ApplicationSet's
-# scmProvider discovery convention matches on this exact filename (owned by
-# hugmesh-generator, currently unseeded/inert — see below), so renaming it without
-# a matching scanner-config change would silently drop this repo from discovery
-# once the Forgejo catalog goes live.
+# hugmesh-deploy.yaml — per-repo deploy descriptor (Phase 6 catalog). RENAMED from
+# the pre-rebrand `snapdragon-deploy.yaml` via `git mv`, so history follows. This
+# was the LAST repo in the org still shipping the legacy spelling; the header above
+# has read `hugmesh-deploy.yaml` since an earlier content sweep, and only the
+# filename lagged.
+#
+# WHY THE RENAME IS SAFE NOW. The header this replaced argued the name had to stay
+# literal because the catalog's scmProvider matches on an exact filename. That
+# stopped being true when the discovery hole was fixed: BOTH catalog generators
+# (hugmesh-generator specs/cluster/apps/13-service-catalog.yaml and
+# templates/apps/13d-brand-repos.yaml.hbs) now carry a `hugmesh-deploy.yaml` filter
+# entry alongside the LEGACY_COMPAT `snapdragon-deploy.yaml` one, and ArgoCD ORs
+# across `filters` entries — so this repo is matched under either spelling and stays
+# discoverable across the rename. Dropping the legacy entries is a separate,
+# deliberately operator-gated follow-up.
+#
+# COUPLED (other repo): hugmesh-generator specs/cluster/catalog/adopters.yaml
+# registers this repo's descriptor BY NAME, and stage 5 of
+# scripts/validate-catalog-discovery.sh reads this repo's root tree and fails on a
+# mismatch. That row must be flipped to `hugmesh-deploy.yaml` in the same window as
+# this rename, or the generator's lint:catalog-descriptor-discovery job reports
+# registry drift. Discovery itself is unaffected either way.
 #
 # Discovered by the catalog ApplicationSet (hugmesh-generator
 # specs/cluster/apps/13-service-catalog.yaml): its scmProvider gitea generator
