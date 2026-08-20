@@ -13,7 +13,7 @@
 # `pentest:sca`) so there is ONE SCA source of truth + the full DAST harness now
 # runs. Onboarding stays additive: build/test stays intact.
 include:
-  - project: 'HugMesh/hugmesh-generator'
+  - project: 'hugmesh/hugmesh-generator'
     ref: main
     file: '/tests/pentest/ci/pentest-stage.gitlab-ci.yml'
 
