@@ -147,8 +147,8 @@ access decision is made at the method level via `@PreAuthorize`:
 | Path prefix | Filter-chain gate | Method gate (`@PreAuthorize`) | Controller |
 |---|---|---|---|
 | `/bff/forum/**` | `.authenticated()` | `hasRole('FORUM') or hasRole('ADMIN')` | `ForumController` |
-| `/bff/forum/moderation/**` | `.authenticated()` (inherits the floor) | `hasRole('ADMIN') or (hasRole('MOD') and hasRole('FORUM'))` | `ModerationController` |
-| `/bff/forum/admin/**` | `hasAnyRole('ADMIN','SUPERADMIN')` | `hasRole('ADMIN')` per method | `ForumAdminController` |
+| `/bff/forum/moderation/**` | `.authenticated()` **+ MFA step-up** | `hasRole('ADMIN') or (hasRole('MOD') and hasRole('FORUM'))` | `ModerationController` |
+| `/bff/forum/admin/**` | `hasAnyRole('ADMIN','SUPERADMIN')` **+ MFA step-up** | `hasRole('ADMIN')` per method | `ForumAdminController` |
 
 - **ROLE_FORUM** — read everything, create topics/replies, and edit/delete your
   **own** posts. Ownership is enforced by `ForumService.isOwnerOrAdmin`:
@@ -174,7 +174,9 @@ Decision tree for `/bff/forum/moderation/**`:
 flowchart TB
     A[Incoming request] --> B{Authenticated?}
     B -- No --> R1[401]
-    B -- Yes --> C{ROLE_ADMIN or ROLE_SUPERADMIN?}
+    B -- Yes --> M{app.mfa.enabled and no fresh MFA_SATISFIED?}
+    M -- Yes --> R0[403 — step-up required]
+    M -- No --> C{ROLE_ADMIN or ROLE_SUPERADMIN?}
     C -- Yes --> ALLOW[Allow — full moderation access]
     C -- No --> D{Has ROLE_MOD?}
     D -- No --> R2[403]
@@ -186,6 +188,23 @@ flowchart TB
 Domain scoping (see [Multi-tenancy](#multi-tenancy-and-domain-scoping)) applies only
 to the `forum_user_role` cache and the `forum_action` audit trail — it is not part of
 this authorization decision, so no domain check gates moderation access.
+
+### MFA step-up on the privileged paths
+
+The two privileged path groups — `/bff/forum/admin/**` and
+`/bff/forum/moderation/**` — additionally require a **fresh second factor** whenever
+the platform-wide `app.mfa.enabled` flag is on. `SecurityConfig.stepUp` wraps those
+two filter-chain rules so they also demand the non-role `MFA_SATISFIED` authority,
+which `CasdoorAuthorities` derives **only** from the BFF-written, freshness-validated
+`mfa_satisfied_at` JWT claim (`MFA_SATISFIED` is a reserved converter prefix, so a
+crafted `permissions: ["MFA_SATISFIED"]` cannot forge it).
+
+`app.mfa.enabled` defaults to `false` org-wide, and while it is off the wrapper is a
+**no-op**: the marker is never derived, so an unconditional check would lock out every
+admin today. The one flag both derives the marker and enforces it, so step-up starts
+working the moment the platform flips it — no follow-up change is needed here. The
+ordinary `/bff/forum/**` floor is deliberately *not* step-up gated: reading and posting
+in the forum is not a privileged action.
 
 ### Casdoor → Spring authorities
 
@@ -199,8 +218,10 @@ BFF, and the gateway):
 - Each entry in the `permissions` claim becomes a verbatim authority.
 - `isAdmin == true` adds `ROLE_ADMIN`.
 
-Reserved-prefix claims (`ROLE_*`, `DOMAIN_*`) inside the `permissions` array are
-stripped, so a crafted `permissions: ["ROLE_SUPERADMIN"]` cannot forge a super-role.
+Reserved-prefix claims (`ROLE_*`, `DOMAIN_*`, `MFA_SATISFIED`) inside the
+`permissions` array are stripped, so a crafted `permissions: ["ROLE_SUPERADMIN"]`
+cannot forge a super-role and a crafted `permissions: ["MFA_SATISFIED"]` cannot forge
+a second factor.
 The converter also derives exactly one `DOMAIN_<x>` authority from the validated
 issuer URI (see [Multi-tenancy](#multi-tenancy-and-domain-scoping)).
 
@@ -560,7 +581,8 @@ see [`application.yml`](src/main/resources/application.yml) for the full set.
 | `HUGMESH_MTLS_CLIENT_ENABLED` | `false` | client-side mTLS presentation to phpBB (outbound) |
 | `SSL_KEY_STORE` / `SSL_TRUST_STORE` (+ `_TYPE`/`_PASSWORD`) | `/stores/keystore.p12` / `/stores/truststore.p12` | shared PKCS12 stores for both mTLS directions |
 | `APP_TENANCY_ISSUERS` | empty (single-issuer) | comma-separated `issuerUri=domainName` pairs enabling multi-issuer mode |
-| `app.mfa.enabled` / `app.mfa.freshness-window` | `false` / `600000` | MFA-marker derivation config (see [Roadmap](#roadmap)) |
+| `APP_MFA_ENABLED` | `false` | derives the `MFA_SATISFIED` marker **and** enforces step-up on `/bff/forum/admin/**` + `/bff/forum/moderation/**` (see [MFA step-up](#mfa-step-up-on-the-privileged-paths)) |
+| `APP_MFA_FRESHNESS_WINDOW` | `600000` (10m) | how long an `mfa_satisfied_at` stamp keeps satisfying step-up, in millis |
 
 Notes on a few of these:
 
@@ -645,16 +667,18 @@ unless explicitly marked ✅.
   invisible to the forum BFF — its contract ("validate the inbound Casdoor Bearer
   JWT") is unchanged, and no code change is expected here beyond participating in
   the shared security test suite.
-- 🔭 **Casdoor MFA / step-up auth.** Platform-wide WebAuthn/TOTP with fail-closed
-  step-up gating is designed but not yet wired end-to-end. This repo already
-  carries the marker-derivation plumbing (`security.Roles.MFA_SATISFIED`, and
-  `SecurityConfig`'s `app.mfa.enabled`/`app.mfa.freshness-window` config threaded
-  into the shared `CasdoorAuthorities.MfaConfig`), so the authority converter is
-  ready to emit an `MFA_SATISFIED` marker the moment the platform turns it on — but
-  `app.mfa.enabled` defaults to `false` (identical legacy behaviour when off), and
-  no `@PreAuthorize`/path gate in this repo checks it yet. `/bff/forum/admin/**` and
-  `/bff/forum/moderation/**` are the expected step-up candidates once the platform
-  enables it.
+- ✅⛓ **Casdoor MFA / step-up auth.** Platform-wide WebAuthn/TOTP is designed but not
+  yet wired end-to-end, and `app.mfa.enabled` still defaults to `false` org-wide.
+  **This BFF's side is done**: the marker-derivation plumbing
+  (`security.Roles.MFA_SATISFIED`, and `SecurityConfig`'s
+  `app.mfa.enabled`/`app.mfa.freshness-window` config threaded into the shared
+  `CasdoorAuthorities.MfaConfig`) is joined by the enforcement half —
+  `SecurityConfig.stepUp` gates `/bff/forum/admin/**` and
+  `/bff/forum/moderation/**` on the `MFA_SATISFIED` marker, as a no-op while the flag
+  is off and fail-closed the moment it flips (see
+  [MFA step-up](#mfa-step-up-on-the-privileged-paths)). What is still owned elsewhere
+  is the *issuance* leg: something has to stamp `mfa_satisfied_at` on the token after
+  a real WebAuthn/TOTP ceremony before the flag can be turned on.
 - 🚧 **External notification channels.** A phpBB forum adapter is one of the
   planned external delivery channels (alongside chat DM/feed channels and email)
   for an in-app notifications feature. Because this BFF is the sole caller of

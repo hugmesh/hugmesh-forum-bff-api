@@ -12,6 +12,9 @@ import org.springframework.security.access.expression.method.MethodSecurityExpre
 import org.springframework.security.access.hierarchicalroles.RoleHierarchy;
 import org.springframework.security.access.hierarchicalroles.RoleHierarchyImpl;
 import org.springframework.security.authentication.ReactiveAuthenticationManagerResolver;
+import org.springframework.security.authorization.AuthenticatedReactiveAuthorizationManager;
+import org.springframework.security.authorization.AuthorityReactiveAuthorizationManager;
+import org.springframework.security.authorization.ReactiveAuthorizationManager;
 import org.springframework.security.config.annotation.method.configuration.EnableReactiveMethodSecurity;
 import org.springframework.security.config.core.GrantedAuthorityDefaults;
 import org.springframework.security.config.annotation.web.reactive.EnableWebFluxSecurity;
@@ -20,12 +23,15 @@ import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.server.resource.authentication.ReactiveJwtAuthenticationConverter;
 import org.springframework.security.web.server.SecurityWebFilterChain;
+import org.springframework.security.web.server.authorization.AuthorizationContext;
 import org.springframework.security.web.server.header.ReferrerPolicyServerHttpHeadersWriter;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 import net.hugmesh.commons.security.CasdoorAuthorities;
 import net.hugmesh.commons.security.DomainRegistry;
 import net.hugmesh.forumbff.security.PrincipalDomain;
+import net.hugmesh.forumbff.security.Roles;
 
 /**
  * Casdoor-aware OAuth2 resource-server security for the forum BFF (reactive
@@ -52,6 +58,17 @@ import net.hugmesh.forumbff.security.PrincipalDomain;
  *       via {@code @PreAuthorize} (NOT here as {@code hasAnyRole}, which cannot express the
  *       AND).</li>
  * </ul>
+ *
+ * <p><b>D8 MFA step-up (ships dark).</b> The two PRIVILEGED path groups —
+ * {@code /bff/forum/admin/**} and {@code /bff/forum/moderation/**} — are wrapped in
+ * {@link #stepUp}. While {@code app.mfa.enabled} is {@code false} (today's default,
+ * org-wide) that wrapper is a NO-OP and the emitted policy is byte-identical to the
+ * legacy one; the moment the platform flips the flag those two groups ALSO require the
+ * {@link Roles#MFA_SATISFIED} marker the converter derives from a FRESH
+ * {@code mfa_satisfied_at} claim. Wiring it HERE rather than at flip time means
+ * enforcement arrives WITH the flag, not with a follow-up change to this repo. The
+ * ordinary {@code /bff/forum/**} floor is deliberately NOT step-up gated — reading and
+ * posting in the forum is not a privileged action.
  *
  * <p><b>Domain-scope (multi-brand).</b> The forum admin/mod surfaces operate on
  * per-domain request-scoped data — the {@code forum_action} audit trail and the
@@ -92,11 +109,13 @@ public class SecurityConfig {
     private final ObjectProvider<ReactiveAuthenticationManagerResolver<ServerWebExchange>>
             tenantAuthManagerResolver;
 
-    /** D8 MFA derivation config (ships dark). {@code app.mfa.enabled} default false:
-     *  when off the converter emits the byte-identical legacy authority set and the
-     *  {@code MFA_SATISFIED} marker is NEVER produced. {@code app.mfa.freshness-window}
-     *  default 10m (600000ms). Threaded into {@link CasdoorAuthorities.MfaConfig} so the
-     *  single-issuer + multi-issuer paths derive the marker identically. */
+    /** D8 MFA config (ships dark). {@code app.mfa.enabled} default false:
+     *  when off the converter emits the byte-identical legacy authority set, the
+     *  {@code MFA_SATISFIED} marker is NEVER produced, and {@link #stepUp} is a no-op.
+     *  {@code app.mfa.freshness-window} default 10m (600000ms). Threaded into
+     *  {@link CasdoorAuthorities.MfaConfig} so the single-issuer + multi-issuer paths
+     *  derive the marker identically, AND read by {@link #stepUp} so the same one flag
+     *  both derives the marker and enforces it on the privileged forum paths. */
     private final boolean mfaEnabled;
     private final long mfaFreshnessWindowMillis;
 
@@ -129,19 +148,65 @@ public class SecurityConfig {
      * so every other route lives here to keep the two chains in lockstep and make
      * it impossible to loosen a non-spec route by editing only one chain.
      */
-    private static void commonRoutes(ServerHttpSecurity.AuthorizeExchangeSpec ex) {
+    private void commonRoutes(ServerHttpSecurity.AuthorizeExchangeSpec ex) {
         // Probes are public so k8s/Docker healthchecks need no token.
         ex.pathMatchers("/actuator/health", "/actuator/health/**", "/actuator/info").permitAll();
         // The admin-console seam — ADMIN (or the cross-domain SUPERADMIN super-role)
         // end-to-end (declared BEFORE the floor so the more-specific prefix matches
         // first). Admins reach it via the converter's ROLE_ADMIN with no ROLE_FORUM
-        // needed; SUPERADMIN reaches it via the role hierarchy edge.
-        ex.pathMatchers("/bff/forum/admin/**").hasAnyRole("ADMIN", "SUPERADMIN");
+        // needed; SUPERADMIN reaches it via the role hierarchy edge. Wrapped in the D8
+        // step-up composition: BYTE-IDENTICAL to .hasAnyRole("ADMIN","SUPERADMIN") while
+        // app.mfa.enabled is off (that is exactly what .hasAnyRole delegates to), plus
+        // the MFA_SATISFIED marker once the platform turns MFA on.
+        ex.pathMatchers("/bff/forum/admin/**").access(
+                stepUp(AuthorityReactiveAuthorizationManager.hasAnyRole("ADMIN", "SUPERADMIN")));
+        // The moderation seam — the SECOND D8 step-up surface, declared BEFORE the floor
+        // for the same reason. The coarse layer still only FLOORS it to .authenticated()
+        // (what inheriting the /bff/forum/** rule below already did, byte for byte)
+        // because hasAnyRole CANNOT express the load-bearing AND-of-MOD+FORUM — that
+        // stays a METHOD gate in ModerationController. Declaring the path here adds the
+        // step-up leg and NOTHING else, and only once app.mfa.enabled is on.
+        ex.pathMatchers("/bff/forum/moderation/**").access(
+                stepUp(AuthenticatedReactiveAuthorizationManager.authenticated()));
         // The whole forum surface — the ROLE_FORUM floor is enforced at the gateway, so
         // .authenticated() proves authentication here. The moderation AND-of-MOD+FORUM
         // gate + ownership are re-checked at the method level (@PreAuthorize) in the
         // controllers/service — NOT here, because hasAnyRole cannot express the AND.
         ex.pathMatchers("/bff/forum/**").authenticated();
+    }
+
+    /**
+     * D8 STEP-UP composition for the two PRIVILEGED forum path groups. When
+     * {@code app.mfa.enabled} is OFF (the dark default) the {@code base} rule is handed
+     * straight back, so the emitted policy is byte-identical to the legacy one — this
+     * MUST stay a no-op while MFA is dark, because the converter NEVER produces the
+     * marker when the flag is off and an unconditional check would 403 every admin
+     * today. When ON, the path additionally demands the non-role
+     * {@link Roles#MFA_SATISFIED} marker.
+     *
+     * <p>The marker is derived ONLY by {@link CasdoorAuthorities} from the BFF-written,
+     * freshness-validated {@code mfa_satisfied_at} claim, and {@code MFA_SATISFIED} is
+     * one of the converter's RESERVED prefixes — so a forged
+     * {@code permissions:["MFA_SATISFIED"]} is dropped before it ever reaches this gate.
+     * This is a genuine second-factor check, not a role re-check.
+     *
+     * <p>Fail-CLOSED by construction: an absent marker is simply "not granted", so a
+     * client-credentials / never-stepped-up / STALE-stamp principal is denied the moment
+     * the platform flips the flag — no follow-up change needed in this repo. {@code base}
+     * is evaluated FIRST and short-circuits on deny, so the step-up leg can only ever
+     * NARROW an already-granted decision, never widen one.
+     */
+    private ReactiveAuthorizationManager<AuthorizationContext> stepUp(
+            ReactiveAuthorizationManager<AuthorizationContext> base) {
+        if (!mfaEnabled) {
+            return base;
+        }
+        ReactiveAuthorizationManager<AuthorizationContext> mfaMarker =
+                AuthorityReactiveAuthorizationManager.hasAuthority(Roles.MFA_SATISFIED);
+        return (authentication, context) -> base.authorize(authentication, context)
+                .flatMap(result -> result.isGranted()
+                        ? mfaMarker.authorize(authentication, context)
+                        : Mono.just(result));
     }
 
     /**
