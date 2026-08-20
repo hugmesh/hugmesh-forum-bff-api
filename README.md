@@ -1,10 +1,10 @@
 # hugmesh-forum-bff-api
 
-The Forum Backend-for-Frontend (BFF) for the [HugMesh](https://github.com/hugmesh-net)
+The Forum Backend-for-Frontend (BFF) for the [HugMesh](https://github.com/hugmesh)
 platform. It wraps a **headless phpBB** install and is the **only** path by which any
 client reaches phpBB — there is no direct browser route, no gateway route into phpBB,
 and no other service that calls it. It is paired 1:1 with
-[`hugmesh-forum-ui`](https://github.com/hugmesh-net/hugmesh-forum-ui), the Angular
+[`hugmesh-forum-ui`](https://github.com/hugmesh/hugmesh-forum-ui), the Angular
 native-federation remote served at the apex path `/social/forum`.
 
 **Stack:** Spring WebFlux + reactive `WebClient` (Mono/Flux; no blocking calls on the
@@ -47,7 +47,7 @@ chain, where each BFF owns exactly one product surface. This repo is the BFF for
 **forums**:
 
 - **Tier:** a per-surface BFF sitting behind
-  [`hugmesh-gateway`](https://github.com/hugmesh-net/hugmesh-gateway). It is the
+  [`hugmesh-gateway`](https://github.com/hugmesh/hugmesh-gateway). It is the
   **only** caller of the headless phpBB extension; no other service and no browser
   talks to phpBB directly.
 - **Runtime datastore:** a small Postgres database (three tables — a forum/role
@@ -55,26 +55,26 @@ chain, where each BFF owns exactly one product surface. This repo is the BFF for
   [Database schema](#database-schema)). All runtime access goes through R2DBC;
   Liquibase (over a JDBC datasource) owns the schema.
 - **Upstream:** the phpBB install and the
-  [`hugmesh-forum-api`](https://github.com/hugmesh-net/hugmesh-forum-api) extension
+  [`hugmesh-forum-api`](https://github.com/hugmesh/hugmesh-forum-api) extension
   run in their own dedicated, default-deny Kubernetes namespace, isolated from this
   BFF's own database namespace. phpBB has no gateway route of its own; this BFF is
   its sole upstream caller.
 - **Identity:** a Casdoor JWT OAuth2 resource server. `issuer-uri` defaults to
   `https://id.hugmesh.net` (overridable via `CASDOOR_ISSUER_URI`).
 - **Sibling repos:** paired UI in
-  [`hugmesh-forum-ui`](https://github.com/hugmesh-net/hugmesh-forum-ui); administered
-  through [`hugmesh-admin-bff-api`](https://github.com/hugmesh-net/hugmesh-admin-bff-api);
+  [`hugmesh-forum-ui`](https://github.com/hugmesh/hugmesh-forum-ui); administered
+  through [`hugmesh-admin-bff-api`](https://github.com/hugmesh/hugmesh-admin-bff-api);
   shares its moderation-seam shape with
-  [`hugmesh-mod-bff-api`](https://github.com/hugmesh-net/hugmesh-mod-bff-api); forked
-  originally from [`hugmesh-user-bff-api`](https://github.com/hugmesh-net/hugmesh-user-bff-api)
+  [`hugmesh-mod-bff-api`](https://github.com/hugmesh/hugmesh-mod-bff-api); forked
+  originally from [`hugmesh-user-bff-api`](https://github.com/hugmesh/hugmesh-user-bff-api)
   (the `casdoorAuthoritiesConverter` pattern and the mTLS keystore setup are shared
   across the BFF family); cluster wiring lives in
-  [`hugmesh-generator`](https://github.com/hugmesh-net/hugmesh-generator).
+  [`hugmesh-generator`](https://github.com/hugmesh/hugmesh-generator).
 
 **Platform authentication, in brief.** Casdoor is the platform's SSO identity
-provider. [`hugmesh-login-ui`](https://github.com/hugmesh-net/hugmesh-login-ui) runs
+provider. [`hugmesh-login-ui`](https://github.com/hugmesh/hugmesh-login-ui) runs
 the Casdoor OIDC (PKCE) redirect, and
-[`hugmesh-user-bff-api`](https://github.com/hugmesh-net/hugmesh-user-bff-api) performs
+[`hugmesh-user-bff-api`](https://github.com/hugmesh/hugmesh-user-bff-api) performs
 the server-side code→token exchange and holds per-session JWT custody — the browser
 only ever sees an opaque, `bff_`-prefixed session cookie and never the Casdoor JWT
 itself. At the edge, the gateway is a pure Casdoor-JWT OAuth2 resource server: a
@@ -284,7 +284,7 @@ and writes go through phpBB's native consistency and permission logic, with no
 raw-database coupling.
 
 The extension lives in its own repo,
-[`hugmesh-forum-api`](https://github.com/hugmesh-net/hugmesh-forum-api), targeting
+[`hugmesh-forum-api`](https://github.com/hugmesh/hugmesh-forum-api), targeting
 phpBB 3.3.
 
 > **Naming note.** The extension's git repo is `hugmesh-forum-api`, but the
@@ -333,7 +333,7 @@ traffic cleanly whether or not phpBB is reachable:
   for the cluster CA) serves both legs. TLS 1.3 is the floor.
 - **`PhpbbAdminClient`** (the ban-congruence seam, gated by
   `external.forum.enabled`, default `false`): mirrors the moderation seam shape used
-  in [`hugmesh-mod-bff-api`](https://github.com/hugmesh-net/hugmesh-mod-bff-api).
+  in [`hugmesh-mod-bff-api`](https://github.com/hugmesh/hugmesh-mod-bff-api).
   `doSuspend()` makes the real `POST`/`DELETE`
   `/api/v1/hugmesh/admin/users/{sub}/ban` call when the flag is on; otherwise it
   returns a stubbed, non-applied result. Every call is breaker-guarded
@@ -342,7 +342,7 @@ traffic cleanly whether or not phpBB is reachable:
 Turning on either flag is a config-only change — no code change is required in this
 BFF. What remains before flipping them in a real deployment is cluster-side: build
 and roll out an official phpBB image with the extension installed (owned by
-[`hugmesh-generator`](https://github.com/hugmesh-net/hugmesh-generator)), bootstrap
+[`hugmesh-generator`](https://github.com/hugmesh/hugmesh-generator)), bootstrap
 it in its namespace, then set `PHPBB_ENABLED=true` here and
 `external.forum.enabled=true` in the admin BFF pointing at the in-cluster phpBB
 service.
@@ -488,7 +488,7 @@ security/tenancy code that used to exist separately across each BFF:
    `net.hugmesh.commons.*`.
 
 3. **This BFF does not consume `hugmesh-auth-core`.**
-   [`hugmesh-auth-core`](https://github.com/hugmesh-net/hugmesh-auth-core) (shared
+   [`hugmesh-auth-core`](https://github.com/hugmesh/hugmesh-auth-core) (shared
    account/session/MFA/Casdoor-admin infrastructure) is consumed only by
    `hugmesh-user-bff-api` and `hugmesh-admin-bff-api` — the SSO/login/session tier.
    This forum BFF is a pure Casdoor-JWT resource server with no login,
@@ -591,7 +591,7 @@ CI runs on a mirrored copy after the merge.
 | `pentest:dast` | authenticated OWASP ZAP baseline DAST plus custom probes, via a shared job template from `hugmesh-generator` | advisory (`allow_failure`) |
 
 The pen-test jobs extend a centralized template included from
-[`hugmesh-generator`](https://github.com/hugmesh-net/hugmesh-generator)
+[`hugmesh-generator`](https://github.com/hugmesh/hugmesh-generator)
 (`tests/pentest/ci/pentest-stage.gitlab-ci.yml`), so SCA/DAST configuration has one
 source of truth across the platform's repos. `make pentest` (`pentest-sca` /
 `pentest-dast`) mirrors these jobs locally as a dev-only convenience — CI remains
@@ -616,7 +616,7 @@ unless explicitly marked ✅.
 - 🔭 **phpBB seam enable.** The phpBB read/write seam (`PhpbbApiClient`,
   `phpbb.enabled`) and the ban-congruence seam (`PhpbbAdminClient`,
   `external.forum.enabled`) are both feature-complete and gated purely by
-  configuration. The [`hugmesh-forum-api`](https://github.com/hugmesh-net/hugmesh-forum-api)
+  configuration. The [`hugmesh-forum-api`](https://github.com/hugmesh/hugmesh-forum-api)
   extension itself is built and proven to install/enable/migrate/route on phpBB
   3.3. What remains is cluster-side: building the phpBB image with the extension
   baked in, namespace bootstrap, and on-cluster validation (owned by
@@ -624,7 +624,7 @@ unless explicitly marked ✅.
 
 **Owned by other repos in the platform:**
 
-- ⛓ **Cluster wiring** ([`hugmesh-generator`](https://github.com/hugmesh-net/hugmesh-generator)).
+- ⛓ **Cluster wiring** ([`hugmesh-generator`](https://github.com/hugmesh/hugmesh-generator)).
   The dedicated phpBB namespace, its default-deny network policy, the phpBB image
   (official phpBB 3.3 + the `hugmesh-forum-api` extension, enabled on first boot),
   its database, and a reconciliation job all live in the generator, not here.
