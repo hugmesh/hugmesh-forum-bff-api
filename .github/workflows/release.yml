@@ -27,7 +27,7 @@ on:
   workflow_dispatch:
 
 env:
-  IMAGE: ghcr.io/hugmesh-net/hugmesh-forum-bff-api
+  IMAGE: ghcr.io/hugmesh/hugmesh-forum-bff-api
 
 jobs:
   build-and-push:
