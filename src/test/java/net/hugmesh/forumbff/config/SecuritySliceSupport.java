@@ -76,6 +76,27 @@ abstract class SecuritySliceSupport {
         return bind(chain, controllers);
     }
 
+    /**
+     * Like {@link #sliceClient} but with the D8 MFA flag ON — {@code SecurityConfig} is
+     * built with {@code app.mfa.enabled=true} and a 10-minute freshness window, so the
+     * privileged-path {@code stepUp} wrappers are LIVE. The dev/test chain is used (the
+     * {@code commonRoutes} the step-up wrappers live in is shared by both profiles).
+     *
+     * <p>The caller must ALSO enable MFA on whatever produces the authorities (the
+     * {@code TenancyResourceServerConfig} the multi-issuer slice drives), or no token
+     * can ever carry the {@code MFA_SATISFIED} marker the gate demands — the flag is one
+     * platform-wide switch and the slice has to mirror that.
+     */
+    static WebTestClient mfaSliceClient(
+            DomainRegistry registry,
+            ObjectProvider<ReactiveAuthenticationManagerResolver<ServerWebExchange>> tenantResolver,
+            Object... controllers) {
+
+        SecurityConfig config = new SecurityConfig(registry, tenantResolver, true, 600000L);
+        SecurityWebFilterChain chain = config.devFilterChain(ServerHttpSecurity.http());
+        return bind(chain, controllers);
+    }
+
     private static WebTestClient bind(SecurityWebFilterChain chain, Object... controllers) {
         WebFilterChainProxy securityFilter = new WebFilterChainProxy(chain);
         return WebTestClient.bindToController(controllers)

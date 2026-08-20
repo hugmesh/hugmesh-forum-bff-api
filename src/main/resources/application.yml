@@ -165,3 +165,16 @@ app:
   # When non-empty, TenancyResourceServerConfig activates; unknown issuers → 401.
   tenancy:
     issuers: "${APP_TENANCY_ISSUERS:}"
+  # D8 MFA / step-up. DEFAULT false -> SHIPS DARK: the Casdoor JWT->Spring authorities
+  # converter emits the BYTE-IDENTICAL legacy authority set, the MFA_SATISFIED marker is
+  # NEVER produced, and SecurityConfig's step-up wrappers on /bff/forum/admin/** and
+  # /bff/forum/moderation/** are NO-OPS. Flipping this ONE flag (the platform does it
+  # org-wide via APP_MFA_ENABLED) both derives the marker from a FRESH BFF-written
+  # `mfa_satisfied_at` JWT-Custom claim AND starts enforcing it on those two privileged
+  # path groups — no follow-up change in this repo. Mirrors the hugmesh-gateway /
+  # hugmesh-admin-bff-api app.mfa.* wiring so the fan-out stays in lockstep.
+  mfa:
+    enabled: "${APP_MFA_ENABLED:false}"
+    # Freshness window in MILLIS for the mfa_satisfied_at claim (default 10m = 600000).
+    # A stamp older than this no longer satisfies step-up.
+    freshness-window: "${APP_MFA_FRESHNESS_WINDOW:600000}"

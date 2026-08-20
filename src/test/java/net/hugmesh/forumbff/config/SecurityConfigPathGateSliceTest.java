@@ -33,6 +33,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>{@code /actuator/health} (+ {@code /info}) — {@code permitAll} (no token).</li>
  *   <li>{@code /bff/forum/admin/**} — {@code hasAnyRole("ADMIN","SUPERADMIN")}
  *       (declared BEFORE the floor so the more-specific prefix wins).</li>
+ *   <li>{@code /bff/forum/moderation/**} — {@code .authenticated()}, also declared
+ *       before the floor purely so the D8 step-up wrapper has a rule to hang off; the
+ *       coarse decision is identical to inheriting the floor.</li>
  *   <li>{@code /bff/forum/**} — {@code .authenticated()} (the ROLE_FORUM floor is
  *       enforced upstream at the gateway; here authentication is enough at the path
  *       level — ROLE_* re-checks live at the method level).</li>
@@ -43,13 +46,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  * AND-of-MOD+FORUM moderation rule lives at the METHOD level
  * ({@code @PreAuthorize("hasRole('ADMIN') or (hasRole('MOD') and hasRole('FORUM'))")}
  * in {@code ModerationController}), NOT in {@code authorizeExchange}: the coarse path
- * policy only floors {@code /bff/forum/moderation/**} (under {@code /bff/forum/**}) to
- * {@code .authenticated()}. So at the FILTER-CHAIN layer a bare authenticated token —
+ * policy only floors {@code /bff/forum/moderation/**} to {@code .authenticated()}. So at
+ * the FILTER-CHAIN layer a bare authenticated token —
  * even a bare ADMIN — passes the moderation PATH (the 403 happens later, at the
  * method gate, covered by {@code ModerationControllerTest}). This slice asserts the
  * coarse layer's actual decision AND documents the boundary, so a future refactor that
  * tried to move moderation gating into {@code authorizeExchange} (where {@code hasAnyRole}
  * CANNOT express the AND, and where a bare ADMIN would then wrongly pass) is caught.
+ *
+ * <p>This class always drives the chain with {@code app.mfa.enabled=false} (what
+ * {@link SecuritySliceSupport#sliceClient} builds), i.e. TODAY's platform default — the
+ * D8 step-up branch is covered separately by {@link MfaStepUpPathGateSliceTest}.
  */
 class SecurityConfigPathGateSliceTest extends SecuritySliceSupport {
 
