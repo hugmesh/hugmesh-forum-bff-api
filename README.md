@@ -703,19 +703,23 @@ configuration-gated seams and proof-coverage gaps, not incomplete implementation
   `security`/`build`/`pentest` stages that `.gitlab-ci.yml` runs post-merge, so a
   pull request can pass its required GitHub check while GitLab's SCA/DAST/image
   stages could still fail after merge.
-- **The `characterImgRef` VN-profile field has no resolvable target yet for the
-  one value the paired UI actually writes.** This BFF only validates the *shape* of
-  the path it's given (`^/bff/user/(?!.*\.\.)[A-Za-z0-9._/-]{1,246}$`, see
-  [`VnProfileDto`](src/main/java/net/hugmesh/forumbff/forum/VnProfileDto.java))
-  — it never dereferences it. `hugmesh-forum-ui`'s VN profile editor currently
-  writes exactly one value (`/bff/user/character/avatar`), but
-  `hugmesh-user-bff-api` has no route at that path today (avatars there are Matrix
-  `mxc://` URLs, never served back over an HTTP path), so a VN profile with the
-  avatar option enabled renders a broken image link. The same gap exists for
-  sticker rendering. Fixing this needs a design decision in
-  `hugmesh-user-bff-api`/`hugmesh-forum-ui` (add a real serving route, or switch the
-  UI to a resolvable identifier) — this BFF is intentionally agnostic to whether
-  the path it stores actually resolves.
+- ~~**The `characterImgRef` VN-profile field has no resolvable target.**~~
+  **RESOLVED (issue #3).** This BFF still only validates the *shape* of the path it
+  is given (`^/bff/user/(?!.*\.\.)[A-Za-z0-9._/-]{1,246}$`, see
+  [`VnProfileDto`](src/main/java/net/hugmesh/forumbff/forum/VnProfileDto.java)) and
+  still never dereferences it — that part is deliberate. What changed is that the
+  paths now resolve. `hugmesh-user-bff-api` serves a VN character avatar at
+  `GET /bff/user/character/avatar/{ref}/body`, where `{ref}` is an opaque, stable
+  per-owner handle its owner reads from `GET /bff/user/character/avatar`, and a
+  sticker at `GET /bff/user/character/stickers/{slug}/body`; both are readable by
+  other users in the same brand, which is what lets a sprite render inside someone
+  else's post. `hugmesh-forum-ui` now stores that resolved body URL instead of the
+  bare path `/bff/user/character/avatar`, which named no owner and served nothing.
+  **Consequence for this repo:** the allowlist must not be narrowed past those two
+  spellings — `VnProfileDto.CANONICAL_AVATAR_REF_SHAPE` /
+  `CANONICAL_STICKER_REF_SHAPE` and `VnProfileControllerTest` pin that cross-repo
+  contract, so tightening the charset fails the build rather than silently breaking
+  every sprite again.
 
 ## Contributing
 

@@ -22,6 +22,16 @@ import java.util.Map;
  * {@code /bff/user/...} path over a conservative character set (no scheme, no
  * {@code ://}, no query/fragment, no {@code ..} traversal), max 256 chars — so a
  * profile can never point a reader's browser at an attacker-controlled origin.
+ *
+ * <p><b>What actually serves those paths (issue #3):</b> hugmesh-user-bff-api. A VN
+ * character avatar is {@code GET /bff/user/character/avatar/&#123;ref&#125;/body}
+ * (opaque per-owner handle; its owner reads the handle from
+ * {@code GET /bff/user/character/avatar}), and a sticker is
+ * {@code GET /bff/user/character/stickers/&#123;slug&#125;/body}. Both serve to other
+ * users in the same brand so a sprite renders inside their posts. This BFF stays
+ * agnostic about whether a stored path resolves, but the allowlist must not be
+ * narrowed past those two spellings — {@link #CANONICAL_AVATAR_REF_SHAPE} /
+ * {@link #CANONICAL_STICKER_REF_SHAPE} pin them.
  */
 public final class VnProfileDto {
 
@@ -48,13 +58,36 @@ public final class VnProfileDto {
     /** Strict same-origin {@code /bff/user/...} path allowlist: conservative path
      *  characters only (no scheme/authority/query/fragment possible), no {@code ..}
      *  traversal, ≤256 chars total (10-char prefix + ≤246). */
-    // TODO: this BFF only validates the SHAPE and never dereferences it — the paired
-    // forum-ui's only value, "/bff/user/character/avatar", has no matching route in
-    // hugmesh-user-bff-api today, so a saved avatar-mode profile 404s for readers.
-    // Needs a cross-repo design decision (real serving route, or a resolvable
-    // identifier instead); see README "Known Gaps / TODO".
+    //
+    // This BFF validates the SHAPE and never dereferences it — deliberately. The two
+    // routes that actually serve those paths live in hugmesh-user-bff-api:
+    //   * a VN character avatar — GET /bff/user/character/avatar/{ref}/body, where
+    //     {ref} is the opaque per-owner handle its owner reads from
+    //     GET /bff/user/character/avatar (see CharacterAvatarController);
+    //   * a character sticker  — GET /bff/user/character/stickers/{slug}/body.
+    // Both are readable by other users in the same brand, which is what makes a
+    // sprite render inside someone else's post. Issue #3 was that hugmesh-forum-ui
+    // stored the BARE path "/bff/user/character/avatar": it named no owner, nothing
+    // served it, and every avatar-mode profile rendered a broken image. The UI now
+    // stores the resolved body URL, so DO NOT tighten this charset in a way that
+    // would stop a real serve URL validating — {@link #CANONICAL_AVATAR_REF_SHAPE}
+    // and VnProfileControllerTest pin that cross-repo contract.
     public static final String CHARACTER_IMG_REF =
             "^/bff/user/(?!.*\\.\\.)[A-Za-z0-9._/-]{1,246}$";
+
+    /** The exact shape hugmesh-user-bff-api's character-avatar serve route produces
+     *  and hugmesh-forum-ui stores as a {@code characterImgRef}
+     *  ({@code /bff/user/character/avatar/<uuid>/body}). Held here as the pinned
+     *  cross-repo contract: {@link #CHARACTER_IMG_REF} MUST keep accepting it. */
+    public static final String CANONICAL_AVATAR_REF_SHAPE =
+            "^/bff/user/character/avatar/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+            + "[0-9a-f]{4}-[0-9a-f]{12}/body$";
+
+    /** The exact shape hugmesh-user-bff-api's sticker serve route produces
+     *  ({@code /bff/user/character/stickers/<slug>/body}) — the sibling media path,
+     *  pinned for the same reason as {@link #CANONICAL_AVATAR_REF_SHAPE}. */
+    public static final String CANONICAL_STICKER_REF_SHAPE =
+            "^/bff/user/character/stickers/[a-z0-9_-]{1,64}/body$";
 
     /** The maximum number of subjects one lookup may resolve. */
     public static final int LOOKUP_MAX_SUBJECTS = 50;

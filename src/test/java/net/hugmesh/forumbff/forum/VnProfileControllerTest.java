@@ -191,6 +191,49 @@ class VnProfileControllerTest {
     }
 
     @Test
+    // CROSS-REPO CONTRACT REGRESSION (issue #3). The value hugmesh-forum-ui stores for
+    // an avatar-mode VN profile is the RESOLVED serve URL of hugmesh-user-bff-api's
+    // character-avatar route — /bff/user/character/avatar/{opaque-handle}/body. The
+    // BARE path this UI used to store named no owner and nothing served it, so every
+    // sprite rendered broken. This BFF must keep ACCEPTING the real serve URL: a
+    // tightened allowlist here would silently break every sprite again, in a repo that
+    // never dereferences the value and so would never notice.
+    void putMe_acceptsTheRealUserBffAvatarServeUrl() {
+        String ref = "/bff/user/character/avatar/3f2504e0-4f89-41d3-9a0c-0305e82c3301/body";
+        // The shape constants are the pinned contract; assert the stored value matches
+        // them AND that the live allowlist admits it (the two must never drift).
+        assertThat(ref).matches(VnProfileDto.CANONICAL_AVATAR_REF_SHAPE);
+        assertThat(ref).matches(VnProfileDto.CHARACTER_IMG_REF);
+        assertThat(ref.length()).isLessThanOrEqualTo(256);
+
+        when(profiles.upsert(eq("sub-me"), any(), any(), any(), any(), any(), any()))
+                .thenReturn(Mono.just(row("sub-me", null, ref, "classic", null, null)));
+        asUser().put().uri("/bff/forum/vn-profiles/me").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("{\"voiceboxStyle\":\"classic\",\"characterImgRef\":\"" + ref + "\"}")
+                .exchange().expectStatus().isOk()
+                .expectBody().jsonPath("$.characterImgRef").isEqualTo(ref);
+        // It survives the SERVICE-layer re-check too (the defence-in-depth allowlist),
+        // not just bean validation — both gates have to admit a real serve URL.
+        verify(profiles).upsert(eq("sub-me"), eq(null), eq(ref), eq("classic"), eq(null), eq(null), any());
+    }
+
+    @Test
+    // Sibling media, same contract: the sticker serve URL of hugmesh-user-bff-api's
+    // StickerController must also stay storable.
+    void putMe_acceptsTheRealUserBffStickerServeUrl() {
+        String ref = "/bff/user/character/stickers/3f2504e0-4f89-41d3-9a0c-0305e82c3301/body";
+        assertThat(ref).matches(VnProfileDto.CANONICAL_STICKER_REF_SHAPE);
+        assertThat(ref).matches(VnProfileDto.CHARACTER_IMG_REF);
+
+        when(profiles.upsert(eq("sub-me"), any(), any(), any(), any(), any(), any()))
+                .thenReturn(Mono.just(row("sub-me", null, ref, "classic", null, null)));
+        asUser().put().uri("/bff/forum/vn-profiles/me").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("{\"voiceboxStyle\":\"classic\",\"characterImgRef\":\"" + ref + "\"}")
+                .exchange().expectStatus().isOk()
+                .expectBody().jsonPath("$.characterImgRef").isEqualTo(ref);
+    }
+
+    @Test
     void putMe_400_onUnknownVoiceboxStyle() {
         asUser().put().uri("/bff/forum/vn-profiles/me").contentType(MediaType.APPLICATION_JSON)
                 .bodyValue("{\"voiceboxStyle\":\"sparkle\"}")
