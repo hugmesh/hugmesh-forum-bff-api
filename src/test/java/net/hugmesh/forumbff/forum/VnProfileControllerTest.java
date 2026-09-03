@@ -19,6 +19,7 @@ import net.hugmesh.forumbff.web.ApiExceptionHandler;
 
 import java.time.Instant;
 import java.util.Collection;
+import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -188,6 +189,98 @@ class VnProfileControllerTest {
                         + "\"characterImgRef\":\"/bff/user/../admin/secret.png\"}")
                 .exchange().expectStatus().isBadRequest();
         verify(profiles, never()).upsert(anyString(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    // CROSS-REPO CONTRACT REGRESSION (issue #3). The value hugmesh-forum-ui stores for
+    // an avatar-mode VN profile is the RESOLVED serve URL of hugmesh-user-bff-api's
+    // character-avatar route — /bff/user/character/avatar/{opaque-handle}/body. The
+    // BARE path this UI used to store named no owner and nothing served it, so every
+    // sprite rendered broken. This BFF must keep ACCEPTING the real serve URL: a
+    // tightened allowlist here would silently break every sprite again, in a repo that
+    // never dereferences the value and so would never notice.
+    void putMe_acceptsTheRealUserBffAvatarServeUrl() {
+        String ref = "/bff/user/character/avatar/3f2504e0-4f89-41d3-9a0c-0305e82c3301/body";
+        // The shape constants are the pinned contract; assert the stored value matches
+        // them AND that the live allowlist admits it (the two must never drift).
+        assertThat(ref).matches(VnProfileDto.CANONICAL_AVATAR_REF_SHAPE);
+        assertThat(ref).matches(VnProfileDto.CHARACTER_IMG_REF);
+        assertThat(ref.length()).isLessThanOrEqualTo(256);
+
+        when(profiles.upsert(eq("sub-me"), any(), any(), any(), any(), any(), any()))
+                .thenReturn(Mono.just(row("sub-me", null, ref, "classic", null, null)));
+        asUser().put().uri("/bff/forum/vn-profiles/me").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("{\"voiceboxStyle\":\"classic\",\"characterImgRef\":\"" + ref + "\"}")
+                .exchange().expectStatus().isOk()
+                .expectBody().jsonPath("$.characterImgRef").isEqualTo(ref);
+        // It survives the SERVICE-layer re-check too (the defence-in-depth allowlist),
+        // not just bean validation — both gates have to admit a real serve URL.
+        verify(profiles).upsert(eq("sub-me"), eq(null), eq(ref), eq("classic"), eq(null), eq(null), any());
+    }
+
+    @Test
+    // Sibling media, same contract: the sticker serve URL of hugmesh-user-bff-api's
+    // StickerController must also stay storable. DEFENSIVE pin — nothing in the trio
+    // writes a sticker body URL into characterImgRef today: hugmesh-forum-ui builds the
+    // sticker <img src> at render time from the separate stickerSlug field
+    // (topic-detail.component.ts spriteUrl). The constraint that actually carries
+    // sticker sprites is STICKER_SLUG, pinned in the shape-coverage test below.
+    // The fixture uses a REAL-looking slug (underscore, short) rather than a UUID, so it
+    // exercises the charset the route's own SLUG_SHAPE declares.
+    void putMe_acceptsTheRealUserBffStickerServeUrl() {
+        String ref = "/bff/user/character/stickers/happy_face/body";
+        assertThat(ref).matches(VnProfileDto.CANONICAL_STICKER_REF_SHAPE);
+        assertThat(ref).matches(VnProfileDto.CHARACTER_IMG_REF);
+
+        when(profiles.upsert(eq("sub-me"), any(), any(), any(), any(), any(), any()))
+                .thenReturn(Mono.just(row("sub-me", null, ref, "classic", null, null)));
+        asUser().put().uri("/bff/forum/vn-profiles/me").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("{\"voiceboxStyle\":\"classic\",\"characterImgRef\":\"" + ref + "\"}")
+                .exchange().expectStatus().isOk()
+                .expectBody().jsonPath("$.characterImgRef").isEqualTo(ref);
+    }
+
+    @Test
+    // The CANONICAL_* constants declare SHAPES, not one string each — and a pin that
+    // samples ONE value only catches the narrowings that value happens to exercise.
+    // Both original fixtures were lowercase-hex UUIDs, so dropping `_`, `.` or `A-Z`
+    // from CHARACTER_IMG_REF's charset left the ENTIRE suite green while rejecting refs
+    // these very constants declare legal (only the `/` mutation failed). Cover the
+    // declared extremes instead, on the write-path allowlist that actually gates saves.
+    void characterImgRefAllowlist_staysASupersetOfEveryCanonicalShape() {
+        // Sticker slugs: this repo's STICKER_SLUG must keep mirroring hugmesh-user-bff-api
+        // StickerController.SLUG_SHAPE ([a-z0-9_-]{1,64}). `_`, `-`, 1-char and 64-char are
+        // all legal there, and hugmesh-forum-ui's own fixtures use them (stickers.spec.ts
+        // asserts stickerBodyUrl("b-2_x")). Dropping `_` from CHARACTER_IMG_REF would 400
+        // a save for every user whose slug has one.
+        for (String slug : List.of("a", "happy_face", "b-2_x", "st-1", "0".repeat(64))) {
+            assertThat(slug).as("STICKER_SLUG must keep mirroring user-bff SLUG_SHAPE: %s", slug)
+                    .matches(VnProfileDto.STICKER_SLUG);
+            String ref = "/bff/user/character/stickers/" + slug + "/body";
+            assertThat(ref).as("CANONICAL_STICKER_REF_SHAPE admits %s", ref)
+                    .matches(VnProfileDto.CANONICAL_STICKER_REF_SHAPE);
+            assertThat(ref).as("CHARACTER_IMG_REF must stay a SUPERSET of it: %s", ref)
+                    .matches(VnProfileDto.CHARACTER_IMG_REF);
+        }
+        // Avatar handles are lowercase hex + `-`; cover both charset extremes.
+        for (String handle : List.of("00000000-0000-0000-0000-000000000000",
+                                     "ffffffff-ffff-ffff-ffff-ffffffffffff")) {
+            String ref = "/bff/user/character/avatar/" + handle + "/body";
+            assertThat(ref).as("CANONICAL_AVATAR_REF_SHAPE admits %s", ref)
+                    .matches(VnProfileDto.CANONICAL_AVATAR_REF_SHAPE);
+            assertThat(ref).as("CHARACTER_IMG_REF must stay a SUPERSET of it: %s", ref)
+                    .matches(VnProfileDto.CHARACTER_IMG_REF);
+            assertThat(ref.length()).isLessThanOrEqualTo(256);
+        }
+        // The extension-bearing media shape this repo already stores as a characterImgRef
+        // (me_returnsStoredProfile) reaches the allowlist ONLY on the write path, so it is
+        // invisible to that read test: pin it here, or dropping `.` also goes unnoticed.
+        assertThat("/bff/user/media/img-1.png").matches(VnProfileDto.CHARACTER_IMG_REF);
+        // DELIBERATELY NOT PINNED: A-Z. The charset admits it, but no /bff/user/** route
+        // in this cross-repo contract produces an uppercase segment (avatar handles are
+        // lowercase hex, sticker slugs lowercase — hugmesh-forum-ui's stickers.spec.ts
+        // asserts stickerBodyUrl("3F2504E0") is null). Narrowing it is a decision to take
+        // openly in its own PR, not one to discover from a broken sprite.
     }
 
     @Test
