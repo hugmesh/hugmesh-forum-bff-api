@@ -703,23 +703,38 @@ configuration-gated seams and proof-coverage gaps, not incomplete implementation
   `security`/`build`/`pentest` stages that `.gitlab-ci.yml` runs post-merge, so a
   pull request can pass its required GitHub check while GitLab's SCA/DAST/image
   stages could still fail after merge.
-- ~~**The `characterImgRef` VN-profile field has no resolvable target.**~~
-  **RESOLVED (issue #3).** This BFF still only validates the *shape* of the path it
-  is given (`^/bff/user/(?!.*\.\.)[A-Za-z0-9._/-]{1,246}$`, see
-  [`VnProfileDto`](src/main/java/net/hugmesh/forumbff/forum/VnProfileDto.java)) and
-  still never dereferences it — that part is deliberate. What changed is that the
-  paths now resolve. `hugmesh-user-bff-api` serves a VN character avatar at
-  `GET /bff/user/character/avatar/{ref}/body`, where `{ref}` is an opaque, stable
-  per-owner handle its owner reads from `GET /bff/user/character/avatar`, and a
-  sticker at `GET /bff/user/character/stickers/{slug}/body`; both are readable by
-  other users in the same brand, which is what lets a sprite render inside someone
-  else's post. `hugmesh-forum-ui` now stores that resolved body URL instead of the
-  bare path `/bff/user/character/avatar`, which named no owner and served nothing.
-  **Consequence for this repo:** the allowlist must not be narrowed past those two
-  spellings — `VnProfileDto.CANONICAL_AVATAR_REF_SHAPE` /
-  `CANONICAL_STICKER_REF_SHAPE` and `VnProfileControllerTest` pin that cross-repo
-  contract, so tightening the charset fails the build rather than silently breaking
-  every sprite again.
+- 🚧 **The `characterImgRef` VN-profile field's resolvable target is landing in two
+  sibling repos (issue #3) — both PRs still open.** This BFF only validates the
+  *shape* of the path it is given (`^/bff/user/(?!.*\.\.)[A-Za-z0-9._/-]{1,246}$`,
+  see [`VnProfileDto`](src/main/java/net/hugmesh/forumbff/forum/VnProfileDto.java))
+  and never dereferences it — that part is deliberate and does not change.
+  - ⛓ 🚧 `hugmesh-user-bff-api` **PR #12 (open, not merged)** adds
+    `CharacterAvatarController`, serving a VN character avatar at
+    `GET /bff/user/character/avatar/{ref}/body`, where `{ref}` is an opaque, stable
+    per-owner handle its owner reads from `GET /bff/user/character/avatar`. **Until
+    that merges no `main` in the org serves it** — grep for
+    `CharacterAvatarController` on `hugmesh-user-bff-api` `main` and you get nothing.
+  - ⛓ ✅ The sibling sticker serve `GET /bff/user/character/stickers/{slug}/body`
+    *is* on `hugmesh-user-bff-api` `main` today. It is readable by other users in the
+    same brand **only once the sticker is ACTIVE** — `PENDING` serves to its owner
+    alone and `REJECTED` to nobody (`StickerService.servesTo`).
+  - ⛓ 🚧 `hugmesh-forum-ui` **PR #14 (open, not merged)** stores that resolved body
+    URL instead of the bare path `/bff/user/character/avatar`, which named no owner
+    and served nothing, and ignores the legacy value on the read side rather than
+    emitting a broken `<img>`.
+  - 🔭 **Not covered by any of the three PRs:** rows saved while the gap was open
+    still hold the literal `/bff/user/character/avatar` in
+    `forum_vn_profile.character_img_ref`. Nothing migrates them and `hugmesh-forum-ui`
+    only *ignores* the legacy value, so those owners get **no sprite** (rather than a
+    broken one) until they re-save their VN profile.
+  - **Consequence for this repo:** the allowlist must not be narrowed past the
+    spellings `VnProfileDto.CANONICAL_AVATAR_REF_SHAPE` /
+    `CANONICAL_STICKER_REF_SHAPE` / `STICKER_SLUG` declare.
+    `VnProfileControllerTest` pins the whole declared *shape* of each — not one
+    sample apiece — so narrowing the charset (dropping `/`, `_` or `.`) fails the
+    build rather than silently breaking every sprite again. `A-Z` is admitted by the
+    charset but deliberately left unpinned: no `/bff/user/**` route in this contract
+    produces an uppercase segment, so narrowing it is a decision to take openly.
 
 ## Contributing
 
