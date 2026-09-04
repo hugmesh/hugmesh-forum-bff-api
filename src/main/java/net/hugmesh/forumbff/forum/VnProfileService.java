@@ -29,6 +29,15 @@ import java.util.Set;
  *       way {@link ForumService#assertModerator} re-checks the method gate — the value
  *       is rendered as an {@code <img src>}, so it must be impossible to persist an
  *       off-origin reference even if a future caller bypasses the annotated DTO.</li>
+ *   <li><b>Owner-blind refs are never stored and never served to a reader</b> — the
+ *       two subject-implicit {@code /bff/user/**} spellings
+ *       ({@link VnProfileDto#OWNER_BLIND_IMG_REFS}) pass the charset allowlist but can
+ *       only ever resolve against the CALLER, so as a post sprite they are a broken
+ *       image (the handle endpoint, issue #3's original defect) or the reader's OWN
+ *       face on someone else's post (the owner-scoped self-avatar serve).
+ *       {@link #resolvableImgRef} clears them on write and suppresses them on the
+ *       reader-facing lookup; {@code GET /me} still echoes what is stored so the
+ *       owner's editor can repair a legacy row on its next save.</li>
  *   <li><b>Bounded, deduped lookup</b> — the batched author-lookup dedups the
  *       requested subjects (bean validation already caps the raw list at
  *       {@value VnProfileDto#LOOKUP_MAX_SUBJECTS}) and returns ONLY subjects that have
@@ -92,7 +101,9 @@ public class VnProfileService {
      * field and a smuggled one is dropped at deserialization. The
      * {@code characterImgRef} allowlist is re-checked here (defence in depth on top of
      * the DTO bean validation) before anything is written; the brand domain is stamped
-     * server-side.
+     * server-side. An OWNER-BLIND ref is cleared to {@code null} first
+     * ({@link #resolvableImgRef}) rather than rejected — the write succeeds with the
+     * image field empty.
      *
      * @param auth the caller's {@link Authentication} (subject + domain derived from it)
      * @param body the validated {@link VnProfileDto.UpdateVnProfile} request body
@@ -100,8 +111,9 @@ public class VnProfileService {
      */
     public Mono<VnProfileDto.VnProfile> update(Authentication auth, VnProfileDto.UpdateVnProfile body) {
         String subject = ForumService.subject(auth);   // ONLY the JWT sub — never the body
-        assertCharacterImgRef(body.characterImgRef()); // defence-in-depth allowlist re-check
-        return profiles.upsert(subject, body.stickerSlug(), body.characterImgRef(),
+        String imgRef = resolvableImgRef(body.characterImgRef()); // owner-blind -> cleared
+        assertCharacterImgRef(imgRef);                 // defence-in-depth allowlist re-check
+        return profiles.upsert(subject, body.stickerSlug(), imgRef,
                         body.voiceboxStyle(), body.voiceboxAccent(), body.voiceStyle(), scopeOf(auth))
                 .map(VnProfileService::toProfile);
     }
@@ -143,13 +155,53 @@ public class VnProfileService {
         }
     }
 
+    /**
+     * The ref as it may be RENDERED: {@code null} for an owner-blind spelling
+     * ({@link VnProfileDto#OWNER_BLIND_IMG_REFS}), otherwise the value unchanged.
+     *
+     * <p>Applied at BOTH ends, for two different reasons:
+     * <ul>
+     *   <li>on {@code PUT /me}, so an owner-blind ref is never STORED again — the write
+     *       still succeeds (the field simply clears). A 400 was the other option and is
+     *       the wrong one: the only client that ever sent this literal is a
+     *       pre-hugmesh-forum-ui#14 bundle, which sends it on EVERY save, so rejecting
+     *       would turn "my sprite is broken" into "my VN profile will not save at all"
+     *       for edits — voicebox, voice, sticker — that have nothing to do with it;</li>
+     *   <li>on {@code POST /lookup}, so the rows written BEFORE this rule existed stop
+     *       reaching readers. That is what makes the repair complete without a data
+     *       migration — and a migration is deliberately NOT the answer here: NULLing
+     *       those rows would erase the only signal the owner's editor uses to re-tick
+     *       "use my avatar" and rewrite the ref to a resolvable one on their next save
+     *       (hugmesh-forum-ui {@code vn-profile-editor.component.ts}).</li>
+     * </ul>
+     *
+     * <p>{@code GET /me} is therefore deliberately NOT filtered: it is the OWNER's own
+     * editing surface and must show what is stored. Only {@link #toView}, the
+     * reader-facing projection, suppresses.
+     *
+     * @param ref the stored/incoming reference; {@code null} passes through
+     * @return the ref, or {@code null} when it is owner-blind
+     */
+    static String resolvableImgRef(String ref) {
+        if (ref == null) {
+            return null;
+        }
+        String normalized = ref.endsWith("/") ? ref.replaceAll("/+$", "") : ref;
+        return VnProfileDto.OWNER_BLIND_IMG_REFS.contains(normalized) ? null : ref;
+    }
+
+    /** The OWNER's own view — echoed exactly as stored (see {@link #resolvableImgRef}
+     *  for why a legacy owner-blind ref must survive to this surface). */
     private static VnProfileDto.VnProfile toProfile(ForumVnProfile row) {
         return new VnProfileDto.VnProfile(row.casdoorSubject(), row.stickerSlug(),
                 row.characterImgRef(), row.voiceboxStyle(), row.voiceboxAccent(), row.voiceStyle());
     }
 
+    /** A READER's view of another author — an owner-blind ref is suppressed here so it
+     *  never reaches an {@code <img src>}; the author's {@code stickerSlug} is untouched,
+     *  so the VN reader falls back to their sticker exactly as it does for a cleared ref. */
     private static VnProfileDto.VnProfileView toView(ForumVnProfile row) {
-        return new VnProfileDto.VnProfileView(row.stickerSlug(), row.characterImgRef(),
+        return new VnProfileDto.VnProfileView(row.stickerSlug(), resolvableImgRef(row.characterImgRef()),
                 row.voiceboxStyle(), row.voiceboxAccent(), row.voiceStyle());
     }
 }

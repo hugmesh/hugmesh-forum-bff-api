@@ -49,7 +49,11 @@ import static org.springframework.security.test.web.reactive.server.SecurityMock
  *   <li>the pinned validation contract rejects with 400: bad hex accent, off-origin /
  *       wrong-prefix / traversal {@code characterImgRef}, bad style values, and an
  *       empty or &gt;50-subject lookup;</li>
- *   <li>the lookup DEDUPS before querying and omits subjects with no row.</li>
+ *   <li>the lookup DEDUPS before querying and omits subjects with no row;</li>
+ *   <li>OWNER-BLIND {@code characterImgRef} spellings
+ *       ({@link VnProfileDto#OWNER_BLIND_IMG_REFS}) are cleared on write and suppressed
+ *       on the reader-facing lookup, while {@code GET /me} still echoes a stored one so
+ *       the owner's editor can repair it.</li>
  * </ul>
  */
 @WebFluxTest(controllers = VnProfileController.class)
@@ -238,6 +242,142 @@ class VnProfileControllerTest {
                 .bodyValue("{\"voiceboxStyle\":\"classic\",\"characterImgRef\":\"" + ref + "\"}")
                 .exchange().expectStatus().isOk()
                 .expectBody().jsonPath("$.characterImgRef").isEqualTo(ref);
+    }
+
+    @Test
+    // OWNER-BLIND REFS (the half of issue #3 that outlived the serving route).
+    // "/bff/user/character/avatar" is hugmesh-user-bff-api's HANDLE endpoint: it answers
+    // JSON to whoever asks, so as an <img src> it is a guaranteed broken image. It is
+    // ALSO the exact literal every pre-hugmesh-forum-ui#14 bundle stores. The write must
+    // succeed with the field CLEARED rather than 400 — that bundle sends this value on
+    // every save, so a 400 would block edits (voicebox, voice, sticker) that have nothing
+    // to do with the image.
+    void putMe_clearsTheOwnerBlindAvatarHandlePath_insteadOfStoringIt() {
+        String handlePath = "/bff/user/character/avatar";
+        // It is inside the charset allowlist: shape validation alone cannot see this.
+        assertThat(handlePath).matches(VnProfileDto.CHARACTER_IMG_REF);
+
+        when(profiles.upsert(eq("sub-me"), any(), any(), any(), any(), any(), any()))
+                .thenReturn(Mono.just(row("sub-me", "cat", null, "classic", null, null)));
+        asUser().put().uri("/bff/forum/vn-profiles/me").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("{\"voiceboxStyle\":\"classic\",\"stickerSlug\":\"cat\","
+                        + "\"characterImgRef\":\"" + handlePath + "\"}")
+                .exchange().expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.characterImgRef").doesNotExist()
+                // the rest of the save is untouched — this is a field clear, not a refusal
+                .jsonPath("$.stickerSlug").isEqualTo("cat");
+        // What reached the STORE is null, not the handle path.
+        verify(profiles).upsert(eq("sub-me"), eq("cat"), eq(null), eq("classic"), eq(null), eq(null), any());
+    }
+
+    @Test
+    // The other owner-blind spelling, and the worse one: /bff/user/profile/avatar/body
+    // resolves its owner from jwt.getSubject(), so a post storing it renders the READER's
+    // own picture beside the AUTHOR's name — a misattributed face, not a broken image.
+    // Nothing in the trio writes it, which is exactly why the server has to refuse it:
+    // the value is reachable with one hand-rolled PUT.
+    void putMe_clearsTheOwnerScopedSelfAvatarServePath() {
+        String selfServe = "/bff/user/profile/avatar/body";
+        assertThat(selfServe).matches(VnProfileDto.CHARACTER_IMG_REF);
+        assertThat(selfServe).doesNotMatch(VnProfileDto.CANONICAL_AVATAR_REF_SHAPE);
+
+        when(profiles.upsert(eq("sub-me"), any(), any(), any(), any(), any(), any()))
+                .thenReturn(Mono.just(row("sub-me", null, null, "classic", null, null)));
+        asUser().put().uri("/bff/forum/vn-profiles/me").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("{\"voiceboxStyle\":\"classic\",\"characterImgRef\":\"" + selfServe + "\"}")
+                .exchange().expectStatus().isOk();
+        verify(profiles).upsert(eq("sub-me"), eq(null), eq(null), eq("classic"), eq(null), eq(null), any());
+    }
+
+    @Test
+    // Trailing-slash near-misses collapse onto the same rule: "…/avatar/" is the same
+    // owner-blind endpoint, and a rule that only matched the exact string would let the
+    // one-character variant straight through.
+    void putMe_clearsOwnerBlindRefs_withATrailingSlashToo() {
+        when(profiles.upsert(eq("sub-me"), any(), any(), any(), any(), any(), any()))
+                .thenReturn(Mono.just(row("sub-me", null, null, "classic", null, null)));
+        asUser().put().uri("/bff/forum/vn-profiles/me").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("{\"voiceboxStyle\":\"classic\","
+                        + "\"characterImgRef\":\"/bff/user/character/avatar/\"}")
+                .exchange().expectStatus().isOk();
+        verify(profiles).upsert(eq("sub-me"), eq(null), eq(null), eq("classic"), eq(null), eq(null), any());
+    }
+
+    @Test
+    // The REPAIR path, and the reason GET /me is deliberately not filtered: a row written
+    // before the serving route existed still holds the handle path, and the owner's editor
+    // (hugmesh-forum-ui vn-profile-editor.component.ts) reads it to re-tick "use my avatar"
+    // and rewrite a resolvable URL on the next save. Filtering it here — or NULLing it in a
+    // migration — would erase that intent and leave the user to rediscover the setting.
+    void me_echoesAStoredOwnerBlindRef_soTheOwnersEditorCanRepairIt() {
+        when(profiles.findBySubject(eq("sub-me"), any()))
+                .thenReturn(Mono.just(row("sub-me", null, "/bff/user/character/avatar",
+                        "classic", null, null)));
+        asUser().get().uri("/bff/forum/vn-profiles/me").exchange().expectStatus().isOk()
+                .expectBody().jsonPath("$.characterImgRef").isEqualTo("/bff/user/character/avatar");
+    }
+
+    @Test
+    // …and the READER-facing projection is where the same stored row must NOT survive:
+    // POST /lookup feeds the VN reader's <img src> for OTHER people's posts. Suppressing
+    // it here is what repairs the already-written rows without a data migration. The
+    // author's stickerSlug is left intact, so the reader falls back to their sticker
+    // exactly as for a profile that never set an image.
+    void lookup_suppressesAStoredOwnerBlindRef_butKeepsTheStickerFallback() {
+        when(profiles.findBySubjects(anyCollection(), any())).thenReturn(Flux.just(
+                row("sub-a", "cat", "/bff/user/character/avatar", "neon", null, null),
+                row("sub-b", null, "/bff/user/profile/avatar/body", "classic", null, null)));
+        asUser().post().uri("/bff/forum/vn-profiles/lookup").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("{\"subjects\":[\"sub-a\",\"sub-b\"]}")
+                .exchange().expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.profiles['sub-a'].characterImgRef").doesNotExist()
+                .jsonPath("$.profiles['sub-a'].stickerSlug").isEqualTo("cat")
+                .jsonPath("$.profiles['sub-a'].voiceboxStyle").isEqualTo("neon")
+                .jsonPath("$.profiles['sub-b'].characterImgRef").doesNotExist();
+    }
+
+    @Test
+    // The suppression must be SURGICAL: a real serve URL — the whole point of the
+    // cross-repo route — still reaches the reader. A rule written one segment too wide
+    // (e.g. "starts with /bff/user/character/avatar") would blank every avatar sprite on
+    // the platform and look exactly like the bug it was meant to fix.
+    void lookup_stillServesTheRealAvatarAndStickerServeUrls() {
+        String avatar = "/bff/user/character/avatar/3f2504e0-4f89-41d3-9a0c-0305e82c3301/body";
+        String sticker = "/bff/user/character/stickers/happy_face/body";
+        assertThat(avatar).matches(VnProfileDto.CANONICAL_AVATAR_REF_SHAPE);
+        assertThat(sticker).matches(VnProfileDto.CANONICAL_STICKER_REF_SHAPE);
+
+        when(profiles.findBySubjects(anyCollection(), any())).thenReturn(Flux.just(
+                row("sub-a", null, avatar, "classic", null, null),
+                row("sub-b", null, sticker, "classic", null, null)));
+        asUser().post().uri("/bff/forum/vn-profiles/lookup").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("{\"subjects\":[\"sub-a\",\"sub-b\"]}")
+                .exchange().expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.profiles['sub-a'].characterImgRef").isEqualTo(avatar)
+                .jsonPath("$.profiles['sub-b'].characterImgRef").isEqualTo(sticker);
+    }
+
+    @Test
+    // The declared rule, pinned as a SET rather than through the two behaviours above:
+    // every owner-blind literal is charset-legal (so only this rule stops it) and none of
+    // them is a canonical serve shape (so the rule can never swallow a real sprite).
+    void ownerBlindRefs_areCharsetLegalButNeverACanonicalServeShape() {
+        assertThat(VnProfileDto.OWNER_BLIND_IMG_REFS).isNotEmpty();
+        for (String ref : VnProfileDto.OWNER_BLIND_IMG_REFS) {
+            assertThat(ref).matches(VnProfileDto.CHARACTER_IMG_REF);
+            assertThat(ref).doesNotMatch(VnProfileDto.CANONICAL_AVATAR_REF_SHAPE);
+            assertThat(ref).doesNotMatch(VnProfileDto.CANONICAL_STICKER_REF_SHAPE);
+            assertThat(VnProfileService.resolvableImgRef(ref)).isNull();
+            assertThat(VnProfileService.resolvableImgRef(ref + "/")).isNull();
+        }
+        // null passes through untouched (clearing the field is always legal), and a real
+        // serve URL is never touched.
+        assertThat(VnProfileService.resolvableImgRef(null)).isNull();
+        String real = "/bff/user/character/avatar/3f2504e0-4f89-41d3-9a0c-0305e82c3301/body";
+        assertThat(VnProfileService.resolvableImgRef(real)).isEqualTo(real);
     }
 
     @Test

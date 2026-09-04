@@ -8,6 +8,7 @@ import jakarta.validation.constraints.Size;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * The JSON shapes crossing the {@code /bff/forum/vn-profiles/**} HTTP boundary — the
@@ -25,15 +26,25 @@ import java.util.Map;
  *
  * <p><b>What serves those paths (issue #3):</b> hugmesh-user-bff-api. A VN character
  * avatar is {@code GET /bff/user/character/avatar/{ref}/body} — an opaque per-owner
- * handle, whose owner reads it from {@code GET /bff/user/character/avatar}. That
- * route arrives with <b>hugmesh-user-bff-api#12, which is still OPEN</b>: until it
- * merges, no {@code main} in the org serves it. A sticker is
- * {@code GET /bff/user/character/stickers/{slug}/body}, which is already on that
- * repo's {@code main}; it is readable by other users in the same brand only once the
+ * handle, whose owner reads it from {@code GET /bff/user/character/avatar}. Both
+ * landed on that repo's {@code main} with hugmesh-user-bff-api#12 (merge
+ * {@code 8976640}, {@code CharacterAvatarController}); hugmesh-forum-ui#14 (merge
+ * {@code ebe86c3}) is the consumer that stores the resolved body URL. A sticker is
+ * {@code GET /bff/user/character/stickers/{slug}/body}, also on that repo's
+ * {@code main}; it is readable by other users in the same brand only once the
  * sticker is ACTIVE (PENDING serves to its owner alone, REJECTED to nobody). This
  * BFF stays agnostic about whether a stored path resolves, but the allowlist must
  * not be narrowed past those spellings — {@link #CANONICAL_AVATAR_REF_SHAPE} /
  * {@link #CANONICAL_STICKER_REF_SHAPE} and {@code VnProfileControllerTest} pin them.
+ *
+ * <p><b>The one narrowing that IS enforced: {@link #OWNER_BLIND_IMG_REFS}.</b> A
+ * {@code characterImgRef} is rendered in a READER's browser next to the POST AUTHOR's
+ * name, so a path that resolves its owner from the CALLER's identity is not merely
+ * broken — it paints the reader's own picture onto everybody else's posts. Two
+ * {@code /bff/user/**} spellings are subject-implicit by construction and can never
+ * be anything else, so they are refused as a value here (see
+ * {@code VnProfileService.resolvableImgRef}). This is not a charset narrowing: both
+ * satisfy {@link #CHARACTER_IMG_REF} — shape validation alone cannot see the defect.
  */
 public final class VnProfileDto {
 
@@ -65,19 +76,20 @@ public final class VnProfileDto {
     // routes that serve those paths live in hugmesh-user-bff-api:
     //   * a VN character avatar — GET /bff/user/character/avatar/{ref}/body, where
     //     {ref} is the opaque per-owner handle its owner reads from
-    //     GET /bff/user/character/avatar. Ships with hugmesh-user-bff-api#12
-    //     (CharacterAvatarController) — that PR is OPEN, so the route is NOT on any
-    //     main yet;
+    //     GET /bff/user/character/avatar. Landed on hugmesh-user-bff-api main with
+    //     #12 (merge 8976640, CharacterAvatarController);
     //   * a character sticker  — GET /bff/user/character/stickers/{slug}/body, which
     //     IS on hugmesh-user-bff-api main; it serves to other users in the same brand
     //     once ACTIVE (PENDING: owner only; REJECTED: nobody).
     // Issue #3 was that hugmesh-forum-ui stored the BARE path
     // "/bff/user/character/avatar": it named no owner, nothing served it, and every
-    // avatar-mode profile rendered a broken image. hugmesh-forum-ui#14 (also OPEN)
+    // avatar-mode profile rendered a broken image. hugmesh-forum-ui#14 (merge ebe86c3)
     // stores the resolved body URL instead, so DO NOT tighten this charset in a way
     // that would stop a real serve URL validating — CANONICAL_AVATAR_REF_SHAPE,
     // CANONICAL_STICKER_REF_SHAPE, STICKER_SLUG and VnProfileControllerTest pin that
     // cross-repo contract, and they pin the whole declared SHAPE, not one sample.
+    // The bare path itself is refused as a VALUE (OWNER_BLIND_IMG_REFS below), which
+    // is a different gate from the charset and must stay that way.
     public static final String CHARACTER_IMG_REF =
             "^/bff/user/(?!.*\\.\\.)[A-Za-z0-9._/-]{1,246}$";
 
@@ -105,6 +117,32 @@ public final class VnProfileDto {
      *  {@code VnProfileControllerTest} pins against the sibling's spelling. */
     public static final String CANONICAL_STICKER_REF_SHAPE =
             "^/bff/user/character/stickers/[a-z0-9_-]{1,64}/body$";
+
+    /**
+     * The {@code /bff/user/**} spellings that resolve their owner from the CALLER's
+     * identity rather than from the path — the refs a VN profile must never carry.
+     *
+     * <ul>
+     *   <li>{@code /bff/user/character/avatar} — hugmesh-user-bff-api's HANDLE endpoint.
+     *       It answers JSON ({@code {ref,url}}) for whoever asks, so as an
+     *       {@code <img src>} it is a guaranteed broken image. This is the exact literal
+     *       hugmesh-forum-ui stored before #14, and the defect issue #3 was filed for;</li>
+     *   <li>{@code /bff/user/profile/avatar/body} — the owner-scoped self-avatar serve.
+     *       It resolves the owner from {@code jwt.getSubject()}, so it renders the
+     *       READER's own picture on every post that stores it: worse than broken, it
+     *       misattributes a face to an author.</li>
+     * </ul>
+     *
+     * <p>Neither can ever become resolvable-for-a-reader — being subject-implicit is
+     * their whole contract — so refusing them costs nothing and is not a narrowing of
+     * the {@link #CHARACTER_IMG_REF} charset (both match it).
+     *
+     * <p>A stored value is compared with its trailing {@code /} trimmed, so the
+     * near-miss spellings collapse onto the same rule.
+     */
+    public static final Set<String> OWNER_BLIND_IMG_REFS = Set.of(
+            "/bff/user/character/avatar",
+            "/bff/user/profile/avatar/body");
 
     /** The maximum number of subjects one lookup may resolve. */
     public static final int LOOKUP_MAX_SUBJECTS = 50;
