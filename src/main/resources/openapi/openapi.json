@@ -1332,7 +1332,7 @@
           "characterImgRef" : {
             "maxLength" : 256,
             "minLength" : 0,
-            "pattern" : "^/bff/user/(?!.*\\.\\.)[A-Za-z0-9._/-]{1,246}$",
+            "pattern" : "^/bff/user/(?!.*\\.\\.)(?!/)(?!.*//)(?!(?:.*/)?\\.(?:/|$))[A-Za-z0-9._/-]{1,246}$",
             "type" : "string"
           },
           "voiceboxStyle" : {

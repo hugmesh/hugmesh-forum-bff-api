@@ -51,9 +51,14 @@ import static org.springframework.security.test.web.reactive.server.SecurityMock
  *       empty or &gt;50-subject lookup;</li>
  *   <li>the lookup DEDUPS before querying and omits subjects with no row;</li>
  *   <li>OWNER-BLIND {@code characterImgRef} spellings
- *       ({@link VnProfileDto#OWNER_BLIND_IMG_REFS}) are cleared on write and suppressed
- *       on the reader-facing lookup, while {@code GET /me} still echoes a stored one so
- *       the owner's editor can repair it.</li>
+ *       ({@link VnProfileDto#OWNER_BLIND_IMG_REFS}) are suppressed on the reader-facing
+ *       lookup, while {@code GET /me} still echoes a stored one so the owner's editor
+ *       can repair it; the self-avatar serve is additionally never stored
+ *       ({@link VnProfileDto#UNSTORABLE_IMG_REFS}), while the legacy handle ref IS
+ *       stored because it is that repair signal;</li>
+ *   <li>every spelling a URL parser rewrites — dot-segments, empty segments — is
+ *       refused at the charset gate, and the owner-blind comparison itself runs on the
+ *       CANONICAL path, so a legacy row spelled {@code /a/./b} is still caught.</li>
  * </ul>
  */
 @WebFluxTest(controllers = VnProfileController.class)
@@ -247,28 +252,34 @@ class VnProfileControllerTest {
     @Test
     // OWNER-BLIND REFS (the half of issue #3 that outlived the serving route).
     // "/bff/user/character/avatar" is hugmesh-user-bff-api's HANDLE endpoint: it answers
-    // JSON to whoever asks, so as an <img src> it is a guaranteed broken image. It is
-    // ALSO the exact literal every pre-hugmesh-forum-ui#14 bundle stores. The write must
-    // succeed with the field CLEARED rather than 400 — that bundle sends this value on
-    // every save, so a 400 would block edits (voicebox, voice, sticker) that have nothing
-    // to do with the image.
-    void putMe_clearsTheOwnerBlindAvatarHandlePath_insteadOfStoringIt() {
-        String handlePath = "/bff/user/character/avatar";
+    // JSON to whoever asks, so as an <img src> it is a guaranteed broken image — and the
+    // reader-facing lookup suppresses it (below). It is nevertheless STORED, on purpose:
+    // it is the exact literal every pre-hugmesh-forum-ui#14 bundle sends on EVERY save,
+    // and the ONLY record that this user asked for their avatar. The owner's editor
+    // re-ticks "use my avatar" from it and rewrites a resolvable URL on the next save.
+    // Clearing it here would flip that tick off on the next load, make re-ticking
+    // impossible (each save re-clears it), and destroy the repair signal before the user
+    // ever receives the new bundle — i.e. it would perform, one row at a time, exactly
+    // the erasure that rules out a NULLing data migration. The reader is already safe.
+    void putMe_keepsTheLegacyAvatarHandlePath_becauseItIsTheRepairSignal() {
+        String handlePath = VnProfileDto.LEGACY_AVATAR_HANDLE_REF;
         // It is inside the charset allowlist: shape validation alone cannot see this.
         assertThat(handlePath).matches(VnProfileDto.CHARACTER_IMG_REF);
+        assertThat(VnProfileDto.OWNER_BLIND_IMG_REFS).contains(handlePath);
+        assertThat(VnProfileDto.UNSTORABLE_IMG_REFS).doesNotContain(handlePath);
 
         when(profiles.upsert(eq("sub-me"), any(), any(), any(), any(), any(), any()))
-                .thenReturn(Mono.just(row("sub-me", "cat", null, "classic", null, null)));
+                .thenReturn(Mono.just(row("sub-me", "cat", handlePath, "classic", null, null)));
         asUser().put().uri("/bff/forum/vn-profiles/me").contentType(MediaType.APPLICATION_JSON)
                 .bodyValue("{\"voiceboxStyle\":\"classic\",\"stickerSlug\":\"cat\","
                         + "\"characterImgRef\":\"" + handlePath + "\"}")
                 .exchange().expectStatus().isOk()
                 .expectBody()
-                .jsonPath("$.characterImgRef").doesNotExist()
-                // the rest of the save is untouched — this is a field clear, not a refusal
+                .jsonPath("$.characterImgRef").isEqualTo(handlePath)
                 .jsonPath("$.stickerSlug").isEqualTo("cat");
-        // What reached the STORE is null, not the handle path.
-        verify(profiles).upsert(eq("sub-me"), eq("cat"), eq(null), eq("classic"), eq(null), eq(null), any());
+        // What reached the STORE is the handle path itself — the signal survives.
+        verify(profiles).upsert(eq("sub-me"), eq("cat"), eq(handlePath), eq("classic"),
+                eq(null), eq(null), any());
     }
 
     @Test
@@ -291,17 +302,55 @@ class VnProfileControllerTest {
     }
 
     @Test
-    // Trailing-slash near-misses collapse onto the same rule: "…/avatar/" is the same
+    // Trailing-slash near-misses collapse onto the same rule: "…/body/" is the same
     // owner-blind endpoint, and a rule that only matched the exact string would let the
     // one-character variant straight through.
-    void putMe_clearsOwnerBlindRefs_withATrailingSlashToo() {
+    void putMe_clearsTheSelfAvatarServe_withATrailingSlashToo() {
         when(profiles.upsert(eq("sub-me"), any(), any(), any(), any(), any(), any()))
                 .thenReturn(Mono.just(row("sub-me", null, null, "classic", null, null)));
         asUser().put().uri("/bff/forum/vn-profiles/me").contentType(MediaType.APPLICATION_JSON)
                 .bodyValue("{\"voiceboxStyle\":\"classic\","
-                        + "\"characterImgRef\":\"/bff/user/character/avatar/\"}")
-                .exchange().expectStatus().isOk();
+                        + "\"characterImgRef\":\"/bff/user/profile/avatar/body/\"}")
+                .exchange().expectStatus().isOk()
+                .expectBody().jsonPath("$.characterImgRef").doesNotExist();
         verify(profiles).upsert(eq("sub-me"), eq(null), eq(null), eq("classic"), eq(null), eq(null), any());
+    }
+
+    @Test
+    // THE BYPASS (round-2 refutation, HIGH). A set-membership test compares STRINGS; a
+    // browser compares PARSED paths. "/bff/user/profile/avatar/./body" is charset-legal,
+    // is not equal to any owner-blind literal, and Chromium still puts
+    // "/bff/user/profile/avatar/body" on the wire — measured: it even DEDUPLICATES that
+    // <img> against one spelled with the plain path. So one hand-rolled PUT was enough to
+    // paint every reader's own face beside the author's name, silently, with a real 200.
+    // Every spelling a URL parser rewrites is now refused at the charset gate, so it
+    // cannot be stored at all.
+    void putMe_refusesEverySpellingAUrlParserWouldRewrite() {
+        for (String smuggled : List.of(
+                "/bff/user/profile/avatar/./body",      // dot-segment -> the self serve
+                "/bff/user/character/./avatar",         // dot-segment -> the handle path
+                "/bff/user//profile/avatar/body",       // empty segment
+                "/bff/user/profile/avatar/body/.",      // trailing dot-segment
+                "/bff/user/character/avatar/../../profile/avatar/body")) { // traversal
+            asUser().put().uri("/bff/forum/vn-profiles/me").contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue("{\"voiceboxStyle\":\"classic\",\"characterImgRef\":\""
+                            + smuggled + "\"}")
+                    .exchange().expectStatus().isBadRequest();
+            assertThat(smuggled).doesNotMatch(VnProfileDto.CHARACTER_IMG_REF);
+        }
+        verify(profiles, never()).upsert(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    // …and the charset stays surgical: a dot INSIDE a segment is an ordinary character no
+    // parser rewrites, so a filename-shaped ref must still validate. This is the assertion
+    // that fails if the dot-segment rule is ever written as "reject any '.'".
+    void charsetStillAcceptsADotInsideASegment() {
+        assertThat("/bff/user/character/avatar/3f2504e0-4f89-41d3-9a0c-0305e82c3301/body")
+                .matches(VnProfileDto.CHARACTER_IMG_REF);
+        assertThat("/bff/user/character/portrait.v2.png").matches(VnProfileDto.CHARACTER_IMG_REF);
+        assertThat("/bff/user/character/.hidden/body").matches(VnProfileDto.CHARACTER_IMG_REF);
+        assertThat("/bff/user/character/avatar/").matches(VnProfileDto.CHARACTER_IMG_REF);
     }
 
     @Test
@@ -361,6 +410,44 @@ class VnProfileControllerTest {
     }
 
     @Test
+    // The READ side of the same bypass, and the half a charset gate cannot reach: rows
+    // written BEFORE the gate existed are still in the table, and "/a/./b" was legal then.
+    // The comparison therefore canonicalises the stored value instead of trusting it, so
+    // a legacy dot-segment spelling is suppressed exactly like the plain one.
+    void lookup_suppressesAnOwnerBlindRefSpelledWithADotSegment() {
+        when(profiles.findBySubjects(anyCollection(), any())).thenReturn(Flux.just(
+                row("sub-a", "cat", "/bff/user/profile/avatar/./body", "classic", null, null),
+                row("sub-b", null, "/bff/user/character/./avatar", "classic", null, null),
+                row("sub-c", null, "/bff/user//profile/avatar/body", "classic", null, null)));
+        asUser().post().uri("/bff/forum/vn-profiles/lookup").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("{\"subjects\":[\"sub-a\",\"sub-b\",\"sub-c\"]}")
+                .exchange().expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.profiles['sub-a'].characterImgRef").doesNotExist()
+                .jsonPath("$.profiles['sub-a'].stickerSlug").isEqualTo("cat")
+                .jsonPath("$.profiles['sub-b'].characterImgRef").doesNotExist()
+                .jsonPath("$.profiles['sub-c'].characterImgRef").doesNotExist();
+    }
+
+    @Test
+    // The canonicaliser the two rules share, pinned directly: what a BROWSER would put on
+    // the wire for a stored spelling. Everything above is one consequence of this.
+    void wirePath_collapsesEverySpellingABrowserRewrites() {
+        String selfServe = VnProfileDto.SELF_AVATAR_BODY_REF;
+        assertThat(VnProfileService.wirePath("/bff/user/profile/avatar/./body")).isEqualTo(selfServe);
+        assertThat(VnProfileService.wirePath("/bff/user//profile/avatar/body")).isEqualTo(selfServe);
+        assertThat(VnProfileService.wirePath("/bff/user/profile/avatar/body/")).isEqualTo(selfServe);
+        assertThat(VnProfileService.wirePath("/bff/user/character/../profile/avatar/body"))
+                .isEqualTo(selfServe);
+        assertThat(VnProfileService.wirePath("/bff/user/profile/avatar/body?x=1")).isEqualTo(selfServe);
+        // ...and leaves a canonical path exactly as it is.
+        String real = "/bff/user/character/avatar/3f2504e0-4f89-41d3-9a0c-0305e82c3301/body";
+        assertThat(VnProfileService.wirePath(real)).isEqualTo(real);
+        assertThat(VnProfileService.wirePath("/bff/user/character/portrait.v2.png"))
+                .isEqualTo("/bff/user/character/portrait.v2.png");
+    }
+
+    @Test
     // The declared rule, pinned as a SET rather than through the two behaviours above:
     // every owner-blind literal is charset-legal (so only this rule stops it) and none of
     // them is a canonical serve shape (so the rule can never swallow a real sprite).
@@ -370,14 +457,45 @@ class VnProfileControllerTest {
             assertThat(ref).matches(VnProfileDto.CHARACTER_IMG_REF);
             assertThat(ref).doesNotMatch(VnProfileDto.CANONICAL_AVATAR_REF_SHAPE);
             assertThat(ref).doesNotMatch(VnProfileDto.CANONICAL_STICKER_REF_SHAPE);
-            assertThat(VnProfileService.resolvableImgRef(ref)).isNull();
-            assertThat(VnProfileService.resolvableImgRef(ref + "/")).isNull();
+            // suppressed for a reader in EVERY spelling that reaches the same endpoint
+            assertThat(VnProfileService.renderableImgRef(ref)).isNull();
+            assertThat(VnProfileService.renderableImgRef(ref + "/")).isNull();
+            assertThat(VnProfileService.renderableImgRef(dotted(ref))).isNull();
         }
         // null passes through untouched (clearing the field is always legal), and a real
-        // serve URL is never touched.
-        assertThat(VnProfileService.resolvableImgRef(null)).isNull();
+        // serve URL is never touched by either gate.
+        assertThat(VnProfileService.renderableImgRef(null)).isNull();
+        assertThat(VnProfileService.storableImgRef(null)).isNull();
         String real = "/bff/user/character/avatar/3f2504e0-4f89-41d3-9a0c-0305e82c3301/body";
-        assertThat(VnProfileService.resolvableImgRef(real)).isEqualTo(real);
+        assertThat(VnProfileService.renderableImgRef(real)).isEqualTo(real);
+        assertThat(VnProfileService.storableImgRef(real)).isEqualTo(real);
+    }
+
+    @Test
+    // The asymmetry between the two gates, stated as its own rule: the READ gate covers
+    // both owner-blind spellings, the WRITE gate covers only the one no client ever
+    // writes. UNSTORABLE ⊂ OWNER_BLIND, never the other way round — widening the write
+    // gate to the whole set is the F2 signal-erasure regression.
+    void theWriteGateIsAStrictSubsetOfTheRenderGate() {
+        assertThat(VnProfileDto.UNSTORABLE_IMG_REFS)
+                .isSubsetOf(VnProfileDto.OWNER_BLIND_IMG_REFS)
+                .containsExactly(VnProfileDto.SELF_AVATAR_BODY_REF);
+        // the legacy handle ref: never rendered, always stored (it is the repair signal)
+        String handle = VnProfileDto.LEGACY_AVATAR_HANDLE_REF;
+        assertThat(VnProfileService.renderableImgRef(handle)).isNull();
+        assertThat(VnProfileService.storableImgRef(handle)).isEqualTo(handle);
+        assertThat(VnProfileService.storableImgRef(dotted(handle))).isEqualTo(dotted(handle));
+        // the self-avatar serve: never rendered, never stored, in any spelling
+        String self = VnProfileDto.SELF_AVATAR_BODY_REF;
+        assertThat(VnProfileService.storableImgRef(self)).isNull();
+        assertThat(VnProfileService.storableImgRef(self + "/")).isNull();
+        assertThat(VnProfileService.storableImgRef(dotted(self))).isNull();
+    }
+
+    /** The same endpoint, spelled with a {@code .} segment a URL parser removes. */
+    private static String dotted(String ref) {
+        int lastSlash = ref.lastIndexOf('/');
+        return ref.substring(0, lastSlash) + "/." + ref.substring(lastSlash);
     }
 
     @Test

@@ -40,11 +40,28 @@ import java.util.Set;
  * <p><b>The one narrowing that IS enforced: {@link #OWNER_BLIND_IMG_REFS}.</b> A
  * {@code characterImgRef} is rendered in a READER's browser next to the POST AUTHOR's
  * name, so a path that resolves its owner from the CALLER's identity is not merely
- * broken — it paints the reader's own picture onto everybody else's posts. Two
- * {@code /bff/user/**} spellings are subject-implicit by construction and can never
- * be anything else, so they are refused as a value here (see
- * {@code VnProfileService.resolvableImgRef}). This is not a charset narrowing: both
- * satisfy {@link #CHARACTER_IMG_REF} — shape validation alone cannot see the defect.
+ * broken — it paints the reader's own picture onto everybody else's posts. The two
+ * {@code /bff/user/**} spellings listed there are <i>subject-implicit</i>: they carry no
+ * owner at all and take it from whoever fetches them, so they are never RENDERED to a
+ * reader ({@code VnProfileService.renderableImgRef}) and the dangerous one is never
+ * STORED ({@code VnProfileService.storableImgRef}). This is not a charset narrowing:
+ * both satisfy {@link #CHARACTER_IMG_REF} — shape validation alone cannot see the
+ * defect.
+ *
+ * <p><b>They are not the only unresolvable {@code /bff/user/**} paths</b>, only the only
+ * subject-IMPLICIT ones. Owner-ENFORCED siblings exist — hugmesh-user-bff-api's
+ * {@code /bff/user/character/parts/{id}/svg} and {@code /bff/user/cards/{slug}/body}
+ * both 404 for a reader who does not own the row — but those are the broken-image
+ * class, not the misattributed-face class, and nothing writes them into a VN profile.
+ * If one ever is, it belongs in {@link #OWNER_BLIND_IMG_REFS} too.
+ *
+ * <p><b>Spelling equivalence is part of the rule, not a detail.</b> A set membership
+ * test compares STRINGS while a browser compares PARSED paths, so
+ * {@code /bff/user/profile/avatar/./body} would sail past a naive check and still hit
+ * {@code /bff/user/profile/avatar/body} on the wire. {@link #CHARACTER_IMG_REF}
+ * therefore refuses every spelling a URL parser rewrites (dot-segments and empty
+ * segments), and the service compares the CANONICAL path so rows written before this
+ * rule existed are caught on the way out too.
  */
 public final class VnProfileDto {
 
@@ -68,9 +85,26 @@ public final class VnProfileDto {
      *  {@code <img src>} — see the class doc). */
     public static final String CHARACTER_IMG_PREFIX = "/bff/user/";
 
+    /** The path spellings a URL parser REWRITES before the request reaches the wire:
+     *  the {@code .} and {@code ..} dot-segments RFC 3986 removes, and the empty
+     *  segments ({@code //}) intermediaries collapse.
+     *
+     *  <p>Refused outright, because a stored ref has to mean exactly ONE wire path.
+     *  {@link #OWNER_BLIND_IMG_REFS} is a set-membership test over strings; a browser
+     *  compares the parsed path. Without this, {@code /bff/user/profile/avatar/./body}
+     *  passes every check on both sides and Chromium still requests
+     *  {@code /bff/user/profile/avatar/body} — the reader's own face, on someone
+     *  else's post. Neither {@link #CANONICAL_AVATAR_REF_SHAPE} nor
+     *  {@link #CANONICAL_STICKER_REF_SHAPE} contains a dot or empty segment, so this
+     *  costs no real serve URL. A {@code .} INSIDE a segment ({@code a.png},
+     *  {@code .hidden}) is still fine — only whole dot-segments are rewritten. */
+    private static final String NO_REWRITTEN_SEGMENTS =
+            "(?!.*\\.\\.)(?!/)(?!.*//)(?!(?:.*/)?\\.(?:/|$))";
+
     /** Strict same-origin {@code /bff/user/...} path allowlist: conservative path
      *  characters only (no scheme/authority/query/fragment possible), no {@code ..}
-     *  traversal, ≤256 chars total (10-char prefix + ≤246). */
+     *  traversal, no spelling a URL parser would rewrite
+     *  ({@link #NO_REWRITTEN_SEGMENTS}), ≤256 chars total (10-char prefix + ≤246). */
     //
     // This BFF validates the SHAPE and never dereferences it — deliberately. The two
     // routes that serve those paths live in hugmesh-user-bff-api:
@@ -88,10 +122,10 @@ public final class VnProfileDto {
     // that would stop a real serve URL validating — CANONICAL_AVATAR_REF_SHAPE,
     // CANONICAL_STICKER_REF_SHAPE, STICKER_SLUG and VnProfileControllerTest pin that
     // cross-repo contract, and they pin the whole declared SHAPE, not one sample.
-    // The bare path itself is refused as a VALUE (OWNER_BLIND_IMG_REFS below), which
-    // is a different gate from the charset and must stay that way.
+    // The bare path itself is never RENDERED to a reader (OWNER_BLIND_IMG_REFS below),
+    // which is a different gate from the charset and must stay that way.
     public static final String CHARACTER_IMG_REF =
-            "^/bff/user/(?!.*\\.\\.)[A-Za-z0-9._/-]{1,246}$";
+            "^/bff/user/" + NO_REWRITTEN_SEGMENTS + "[A-Za-z0-9._/-]{1,246}$";
 
     /** The exact shape hugmesh-user-bff-api's character-avatar serve route produces
      *  and hugmesh-forum-ui stores as a {@code characterImgRef}
@@ -119,30 +153,63 @@ public final class VnProfileDto {
             "^/bff/user/character/stickers/[a-z0-9_-]{1,64}/body$";
 
     /**
+     * hugmesh-user-bff-api's HANDLE endpoint — it answers JSON ({@code {ref,url}}) for
+     * whoever asks, so as an {@code <img src>} it is a guaranteed broken image. This is
+     * the exact literal hugmesh-forum-ui stored before #14 and the defect issue #3 was
+     * filed for; it is ALSO the only surviving record of "this user wanted their avatar",
+     * which is why it is kept on write (see {@link #UNSTORABLE_IMG_REFS}).
+     */
+    public static final String LEGACY_AVATAR_HANDLE_REF = "/bff/user/character/avatar";
+
+    /**
+     * The owner-scoped self-avatar serve. It resolves the owner from
+     * {@code jwt.getSubject()}, so it renders the READER's own picture on every post
+     * that stores it: worse than broken, it misattributes a face to an author. No
+     * client in the trio has ever written it — it is reachable only by a hand-rolled
+     * {@code PUT}, which is exactly why the server refuses it.
+     */
+    public static final String SELF_AVATAR_BODY_REF = "/bff/user/profile/avatar/body";
+
+    /**
      * The {@code /bff/user/**} spellings that resolve their owner from the CALLER's
-     * identity rather than from the path — the refs a VN profile must never carry.
+     * identity rather than from the path — the refs that must never reach a READER's
+     * {@code <img src>} ({@code VnProfileService.renderableImgRef}, applied to the
+     * reader-facing {@code POST /lookup} projection only).
      *
-     * <ul>
-     *   <li>{@code /bff/user/character/avatar} — hugmesh-user-bff-api's HANDLE endpoint.
-     *       It answers JSON ({@code {ref,url}}) for whoever asks, so as an
-     *       {@code <img src>} it is a guaranteed broken image. This is the exact literal
-     *       hugmesh-forum-ui stored before #14, and the defect issue #3 was filed for;</li>
-     *   <li>{@code /bff/user/profile/avatar/body} — the owner-scoped self-avatar serve.
-     *       It resolves the owner from {@code jwt.getSubject()}, so it renders the
-     *       READER's own picture on every post that stores it: worse than broken, it
-     *       misattributes a face to an author.</li>
-     * </ul>
+     * <p>Both are subject-implicit by construction, so neither can ever become
+     * resolvable-for-a-reader; refusing to render them costs nothing and is not a
+     * narrowing of the {@link #CHARACTER_IMG_REF} charset (both match it). They are the
+     * subject-implicit family, NOT the whole unresolvable family — see the class doc
+     * for the owner-ENFORCED siblings that 404 instead.
      *
-     * <p>Neither can ever become resolvable-for-a-reader — being subject-implicit is
-     * their whole contract — so refusing them costs nothing and is not a narrowing of
-     * the {@link #CHARACTER_IMG_REF} charset (both match it).
-     *
-     * <p>A stored value is compared with its trailing {@code /} trimmed, so the
-     * near-miss spellings collapse onto the same rule.
+     * <p>Membership is tested against the CANONICAL path
+     * ({@code VnProfileService.wirePath}), not the raw string, so trailing slashes,
+     * dot-segments and empty segments all collapse onto the same rule — a stored
+     * {@code /bff/user/profile/avatar/./body} is the same endpoint to a browser and
+     * must be the same endpoint to this rule.
      */
     public static final Set<String> OWNER_BLIND_IMG_REFS = Set.of(
-            "/bff/user/character/avatar",
-            "/bff/user/profile/avatar/body");
+            LEGACY_AVATAR_HANDLE_REF,
+            SELF_AVATAR_BODY_REF);
+
+    /**
+     * The subset {@code PUT /me} clears instead of storing — deliberately NARROWER than
+     * {@link #OWNER_BLIND_IMG_REFS}, and the asymmetry is the point.
+     *
+     * <p>{@link #SELF_AVATAR_BODY_REF} carries no information anybody wants back: no
+     * client writes it, it means nothing to the owner's editor, and it is the spelling
+     * that misattributes a face. Clearing it on write is pure gain.
+     *
+     * <p>{@link #LEGACY_AVATAR_HANDLE_REF} is the opposite. It IS a signal: the owner's
+     * editor (hugmesh-forum-ui {@code vn-profile-editor.component.ts}) re-ticks "use my
+     * avatar" from it and rewrites a resolvable URL on the next save. A pre-#14 bundle
+     * still sends it on EVERY save, so clearing it server-side would flip that tick off
+     * on the next load, make re-ticking impossible, and destroy the repair signal before
+     * the user ever receives the new bundle — the exact loss that rules a NULLing data
+     * migration out. Suppressing it on read already protects every reader, so the write
+     * side has nothing left to buy and a real cost to pay.
+     */
+    public static final Set<String> UNSTORABLE_IMG_REFS = Set.of(SELF_AVATAR_BODY_REF);
 
     /** The maximum number of subjects one lookup may resolve. */
     public static final int LOOKUP_MAX_SUBJECTS = 50;
