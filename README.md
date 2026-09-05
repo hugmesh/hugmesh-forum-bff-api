@@ -246,8 +246,8 @@ logged-in reader, who may not hold the forum-author role):
 | Method + path | Purpose |
 |---|---|
 | `GET /me` | the caller's own visual-novel-style reading presentation profile. **Never 404s**: an absent row synthesizes `{stickerSlug:null, characterImgRef:null, voiceboxStyle:"classic", voiceboxAccent:null, voiceStyle:null}`. |
-| `PUT /me` | upsert the caller's profile → 200 with the saved profile. Subject is always taken from the JWT `sub` — a smuggled subject field in the body is silently dropped. Server-enforced validation: `voiceboxStyle` ∈ `classic\|glass\|retro\|neon\|paper`; `voiceboxAccent` `^#[0-9a-f]{6}$`; `stickerSlug` `^[a-z0-9_-]{1,64}$`; `voiceStyle` ∈ `warm\|bright\|deep\|soft\|robot` or null; `characterImgRef` a strict same-origin `/bff/user/...` path allowlist ≤256 chars (it's rendered as an `<img src>`, so it's re-checked defensively at the service layer too). |
-| `POST /lookup` | batch-resolve `{subjects:[...]}` (1–50, deduplicated server-side; empty or oversized → 400) → `{profiles:{"<subject>":{…}}}`. Subjects with no row are simply absent keys — never null, never a 404. |
+| `PUT /me` | upsert the caller's profile → 200 with the saved profile. Subject is always taken from the JWT `sub` — a smuggled subject field in the body is silently dropped. Server-enforced validation: `voiceboxStyle` ∈ `classic\|glass\|retro\|neon\|paper`; `voiceboxAccent` `^#[0-9a-f]{6}$`; `stickerSlug` `^[a-z0-9_-]{1,64}$`; `voiceStyle` ∈ `warm\|bright\|deep\|soft\|robot` or null; `characterImgRef` a strict same-origin `/bff/user/...` path allowlist ≤256 chars (it's rendered as an `<img src>`, so it's re-checked defensively at the service layer too). The allowlist also refuses every spelling a URL parser would **rewrite** — `.`/`..` dot-segments and empty (`//`) segments — so a stored ref means exactly one wire path. On top of the shape, the owner-scoped self-avatar serve `/bff/user/profile/avatar/body` (`VnProfileDto.UNSTORABLE_IMG_REFS`) is **cleared to null**, not rejected. The legacy character-avatar handle path `/bff/user/character/avatar` is deliberately **kept** — see the owner-blind note below. |
+| `POST /lookup` | batch-resolve `{subjects:[...]}` (1–50, deduplicated server-side; empty or oversized → 400) → `{profiles:{"<subject>":{…}}}`. Subjects with no row are simply absent keys — never null, never a 404. This is the READER-facing projection — and the only one — so a stored owner-blind `characterImgRef` is suppressed here (the author's `stickerSlug` is left intact, so the reader falls back to their sticker). Suppression compares the **canonical** path, so a legacy row spelled `/bff/user/profile/avatar/./body` is caught too. |
 
 Rows live in `forum_vn_profile` and are domain-scoped the same way as
 `forum_user_role` (brand stamped server-side from the validated issuer; SUPERADMIN is
@@ -703,30 +703,62 @@ configuration-gated seams and proof-coverage gaps, not incomplete implementation
   `security`/`build`/`pentest` stages that `.gitlab-ci.yml` runs post-merge, so a
   pull request can pass its required GitHub check while GitLab's SCA/DAST/image
   stages could still fail after merge.
-- 🚧 **The `characterImgRef` VN-profile field's resolvable target is landing in two
-  sibling repos (issue #3) — both PRs still open.** This BFF only validates the
-  *shape* of the path it is given (`^/bff/user/(?!.*\.\.)[A-Za-z0-9._/-]{1,246}$`,
-  see [`VnProfileDto`](src/main/java/net/hugmesh/forumbff/forum/VnProfileDto.java))
-  and never dereferences it — that part is deliberate and does not change.
-  - ⛓ 🚧 `hugmesh-user-bff-api` **PR #12 (open, not merged)** adds
+- ✅ **The `characterImgRef` VN-profile field's resolvable target (issue #3) — all
+  three halves are on `main`.** This BFF still only validates the *shape* of the path
+  it is given (a strict same-origin `/bff/user/...` charset that additionally refuses
+  every spelling a URL parser rewrites — see
+  [`VnProfileDto`](src/main/java/net/hugmesh/forumbff/forum/VnProfileDto.java)) and
+  never dereferences it — that part is deliberate and does not change.
+  - ⛓ ✅ `hugmesh-user-bff-api` **PR #12 (merged, `8976640`)** added
     `CharacterAvatarController`, serving a VN character avatar at
     `GET /bff/user/character/avatar/{ref}/body`, where `{ref}` is an opaque, stable
-    per-owner handle its owner reads from `GET /bff/user/character/avatar`. **Until
-    that merges no `main` in the org serves it** — grep for
-    `CharacterAvatarController` on `hugmesh-user-bff-api` `main` and you get nothing.
+    per-owner handle its owner reads from `GET /bff/user/character/avatar`. Not
+    owner-scoped, on purpose: like an ACTIVE sticker it has to render inside other
+    users' posts, so the access rule is owner-or-same-brand and every miss is one
+    uniform 404. `image/svg+xml` is refused on the read side as well as at upload.
   - ⛓ ✅ The sibling sticker serve `GET /bff/user/character/stickers/{slug}/body`
     *is* on `hugmesh-user-bff-api` `main` today. It is readable by other users in the
     same brand **only once the sticker is ACTIVE** — `PENDING` serves to its owner
     alone and `REJECTED` to nobody (`StickerService.servesTo`).
-  - ⛓ 🚧 `hugmesh-forum-ui` **PR #14 (open, not merged)** stores that resolved body
+  - ⛓ ✅ `hugmesh-forum-ui` **PR #14 (merged, `ebe86c3`)** stores that resolved body
     URL instead of the bare path `/bff/user/character/avatar`, which named no owner
     and served nothing, and ignores the legacy value on the read side rather than
     emitting a broken `<img>`.
-  - 🔭 **Not covered by any of the three PRs:** rows saved while the gap was open
-    still hold the literal `/bff/user/character/avatar` in
-    `forum_vn_profile.character_img_ref`. Nothing migrates them and `hugmesh-forum-ui`
-    only *ignores* the legacy value, so those owners get **no sprite** (rather than a
-    broken one) until they re-save their VN profile.
+  - ✅ **The leftover rows are handled here, without a migration.** Profiles saved
+    while the gap was open still hold the literal `/bff/user/character/avatar` in
+    `forum_vn_profile.character_img_ref`. `VnProfileService.renderableImgRef`
+    suppresses every *owner-blind* ref (`VnProfileDto.OWNER_BLIND_IMG_REFS`) on the
+    reader-facing `POST /lookup`, so no reader is served a ref that can only resolve
+    against *their own* identity. `GET /me` deliberately still echoes the stored
+    value: that is the signal `hugmesh-forum-ui`'s editor uses to re-tick "use my
+    avatar" and rewrite a resolvable URL on the owner's next save, so NULLing those
+    rows in a migration would destroy the repair rather than complete it. The second
+    owner-blind spelling, `/bff/user/profile/avatar/body`, is covered by the same
+    render rule — it resolves from `jwt.getSubject()`, so a post storing it would
+    render each *reader's own* picture beside the author's name.
+  - ✅ **The write gate is deliberately narrower than the render gate.**
+    `VnProfileService.storableImgRef` clears only `/bff/user/profile/avatar/body`
+    (`VnProfileDto.UNSTORABLE_IMG_REFS`) — the spelling no client writes and nobody
+    wants back. It does **not** clear the legacy handle path, because clearing it
+    would perform the *same* signal erasure that rules out the migration, one row at a
+    time: a pre-`hugmesh-forum-ui#14` bundle sends that literal on every save, so the
+    owner's "use my avatar" tick would flip off on the next load and could never be
+    turned back on. `UNSTORABLE_IMG_REFS ⊂ OWNER_BLIND_IMG_REFS` is pinned by a test.
+  - ✅ **Spelling equivalence is part of the rule.** A set-membership test compares
+    strings; a browser compares *parsed* paths. `/bff/user/profile/avatar/./body` is
+    charset-legal, equals no owner-blind literal, and Chromium still puts
+    `/bff/user/profile/avatar/body` on the wire (measured: it even de-duplicates that
+    `<img>` against one spelled with the plain path). Both halves are closed — the
+    charset refuses dot-segments and empty segments on the way in, and
+    `VnProfileService.wirePath` canonicalises the *stored* value before the
+    comparison, so rows written before the rule existed are caught on the way out.
+    A `.` **inside** a segment (`portrait.v2.png`, `.hidden`) is untouched.
+  - 🔭 **Not the whole unresolvable family, only the subject-implicit one.**
+    `hugmesh-user-bff-api` also has owner-**enforced** siblings
+    (`/bff/user/character/parts/{id}/svg`, `/bff/user/cards/{slug}/body`) that 404 for
+    a reader who does not own the row. Those are the broken-image class, not the
+    misattributed-face class, and nothing writes them into a VN profile — if anything
+    ever does, they belong in `OWNER_BLIND_IMG_REFS` too.
   - **Consequence for this repo:** the allowlist must not be narrowed past the
     spellings `VnProfileDto.CANONICAL_AVATAR_REF_SHAPE` /
     `CANONICAL_STICKER_REF_SHAPE` / `STICKER_SLUG` declare.
