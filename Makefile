@@ -5,12 +5,38 @@
 # set) delegates the full DAST harness, and never hard-fails on missing tooling.
 
 # --- Pen-test knobs --------------------------------------------------------
-# CVSS gate for the local SCA self-scan (mirrors CI -DfailBuildOnCVSS=9).
-SCA_FAIL_CVSS ?= 9
-# JDK image used to run dependency-check exactly as CI does (when USE_DOCKER=1).
-JDK_IMAGE     ?= eclipse-temurin:21-jdk-noble
-# Set USE_DOCKER=1 to run the SCA scan inside the CI JDK image instead of the
-# host ./mvnw (matches CI byte-for-byte; needs docker).
+# CVSS gate for the local SCA self-scan. MUST track CI, or `make pentest-sca`
+# reports a clean repo for findings CI fails on.
+#
+# CI's threshold is 7, not 9: `.gitlab-ci.yml`'s `pentest:sca` extends the
+# generator's hidden `.pentest-sca`, which defaults `SCA_FAIL_CVSS: "7"` and
+# passes it as `--failOnCVSS "${SCA_FAIL_CVSS}"` (hugmesh-generator
+# tests/pentest/ci/pentest-stage.gitlab-ci.yml:66 and :79), and this repo's thin
+# `pentest:sca` job does not override it. The GitHub-side `sca` job in
+# .github/workflows/ci.yml pins the same 7.
+#
+# This line used to read `?= 9` above a comment claiming it mirrored a CI flag
+# `-DfailBuildOnCVSS=9` — a flag that appears in no revision of `.gitlab-ci.yml`
+# in this repo's history (CI has used the Dependency-Check CLI's `--failOnCVSS`
+# since the inline SCA job was migrated onto `.pentest-sca`). The local mirror was
+# therefore two CVSS points LAXER than CI while asserting parity, so every CVSS
+# 7.0-8.9 finding passed locally and failed in CI.
+SCA_FAIL_CVSS ?= 7
+# JDK image for the USE_DOCKER=1 path. It MUST be 25: hugmesh-parent sets
+# <java.version>25</java.version> (hugmesh-parent/pom.xml:29), the Dockerfile
+# builds on eclipse-temurin:25-jdk, and .gitlab-ci.yml's `test` job runs
+# eclipse-temurin:25-jdk-noble. This was pinned at 21, which cannot compile a
+# release-25 build at all — and because the recipe below ends in
+# `|| { echo ...; exit 0; }`, that failure printed "docker/scan unavailable or
+# findings >= CVSS N (non-fatal locally)" and exited 0. A dev reading that line
+# has no way to tell a scan that found nothing from a scan that never ran.
+JDK_IMAGE     ?= eclipse-temurin:25-jdk-noble
+# Set USE_DOCKER=1 to run the SCA scan inside a JDK container instead of the host
+# ./mvnw (needs docker). NOTE this is NOT byte-identical to CI: CI's `pentest:sca`
+# runs the Dependency-Check CLI from the owasp/dependency-check image over the
+# whole checkout, while both branches here drive the dependency-check-maven plugin.
+# Same engine and same CVSS gate, different analyzer entry point — treat this as a
+# fast local signal, not as a reproduction of the CI verdict.
 USE_DOCKER    ?=
 # DAST: when set, the full harness scans this already-running target. Unset =>
 # DAST is skipped locally (the harness stands up its own env in CI).
