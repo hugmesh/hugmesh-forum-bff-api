@@ -1,32 +1,73 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# GitHub-side COMPILE + TEST GATE  (exemplar — roll out to every Java service repo)
+# GitHub-side COMPILE + TEST + SCA workflow.
 #
-# WHY THIS EXISTS
-# Merges happen on GitHub (`gh pr merge`), but the existing test pipeline runs on the
-# in-cluster GitLab mirror (.gitlab-ci.yml) — and GitHub never waits for GitLab. So a
-# PR can merge with a BROKEN main and GitLab only fails afterwards. That is exactly how
-# forum-bff main went non-compiling for a while (a static-analysis cleanup dropped a
-# `ClientResponse` import; the build failed only post-merge on GitLab; PR #34 fixed it).
-# This workflow makes the compile + test a REQUIRED, merge-blocking GitHub status check.
+# READ THIS FIRST — NOTHING IN THIS FILE HAS EVER EXECUTED. Measured 2026-09-17
+# against github.com/hugmesh/hugmesh-forum-bff-api, via the REST API:
+#
+#   * 25 of 25 `CI` runs since 2026-07-30 ended `cancelled`. Not one was ever
+#     assigned a runner — `runner_name` is empty and `steps` is empty on every
+#     job. Run 33946257559 queued at 2026-09-05T05:04:57Z and was cancelled at
+#     2026-09-06T05:04:57Z, exactly 24h later: GitHub's queue limit for a job no
+#     runner picks up. (Three shorter cancellations are `concurrency:` below
+#     superseding an older commit, not runs that did anything.)
+#   * GET /repos/hugmesh/hugmesh-forum-bff-api/actions/runners -> total_count 0.
+#     No self-hosted runner carrying the `hugmesh-x86` label is registered here.
+#   * github-HOSTED runners are not an escape hatch on this account: they die in
+#     3-5s with "The job was not started because recent account payments have
+#     failed or your spending limit needs to be increased" (reproduced the same
+#     day on hugmesh/hugmesh-generator run 35277167203, labels [ubuntu-latest]).
+#   * GET /repos/hugmesh/hugmesh-forum-bff-api/branches/main/protection -> 403
+#     "Upgrade to GitHub Pro or make this repository public to enable this
+#     feature". On the current plan a required status check on a PRIVATE repo
+#     cannot be configured AT ALL — so nothing here can be made merge-blocking
+#     by editing this file.
+#
+# An earlier version of this header asserted that this workflow "makes the
+# compile + test a REQUIRED, merge-blocking GitHub status check". It does not,
+# and it never did: every PR in this repo merged with this workflow contributing
+# nothing. That claim is corrected here rather than deleted, because a CI file
+# that overstates its own coverage is exactly how a gap survives a review — the
+# reader sees a plausible gate and stops looking. Tracked, with the API evidence,
+# on hugmesh/hugmesh-forum-bff-api#2.
+#
+# WHY THIS FILE EXISTS ANYWAY
+# Merges happen on GitHub (`gh pr merge`), but the test pipeline runs on the
+# in-cluster GitLab PULL MIRROR (.gitlab-ci.yml) — and GitHub never waits for
+# GitLab. So a PR can merge onto a BROKEN main and GitLab only fails afterwards.
+# That is exactly how forum-bff main went non-compiling once (a static-analysis
+# cleanup dropped a `ClientResponse` import; the build failed only post-merge on
+# GitLab; PR #34 fixed it). This workflow is the intended remedy, waiting on the
+# PREREQS below to become real.
 #
 # RUNNER — must be SELF-HOSTED in-cluster (tailnet).
 # The private deps (hugmesh-parent / hugmesh-commons) live ONLY in the in-cluster
-# GitLab group Maven registry, which a github.com-hosted runner cannot reach (Tailscale-
-# only). So this runs on a self-hosted runner registered to the repo/org that sits on the
-# tailnet and has Docker (for the Testcontainers full-context tests) — the same host class
-# as the GitLab `hugmesh-x86` runner. (ALTERNATIVE if you prefer github-hosted runners:
-# publish hugmesh-parent + hugmesh-commons to GitHub Packages and point settings.xml
-# at it with GITHUB_TOKEN — a bigger change to those two repos + every consumer's settings.xml.)
+# GitLab group Maven registry, which a github.com-hosted runner cannot reach
+# (Tailscale-only). So this runs on a self-hosted runner registered to the
+# repo/org that sits on the tailnet and has Docker — for the Testcontainers
+# full-context tests in `build`, and for the Dependency-Check image in `sca` —
+# the same host class as the GitLab `hugmesh-x86` runner. (ALTERNATIVE if you
+# prefer github-hosted runners: publish hugmesh-parent + hugmesh-commons to
+# GitHub Packages and point settings.xml at it with GITHUB_TOKEN — a bigger
+# change to those two repos + every consumer's settings.xml — and it still needs
+# the billing block above lifted.)
 #
-# PREREQS (one-time, per the org / repo settings — I cannot set these, they are yours):
-#   1. Register a self-hosted runner (labels: self-hosted, hugmesh-x86) on the tailnet
-#      with Docker available (mirrors the GitLab privileged shell runner).
+# PREREQS (one-time; ALL FOUR are operator-held — none can be set from a PR):
+#   1. Register a self-hosted runner (labels: self-hosted, hugmesh-x86) on the
+#      tailnet with Docker available (mirrors the GitLab privileged shell
+#      runner). Until this exists, both jobs below queue for 24h and are
+#      cancelled, which is the measured status quo.
 #   2. Add repo/org SECRETS that map to the settings.xml ${env.*} placeholders:
 #        GITLAB_MAVEN_TOKEN  -> a read-scoped token for the GitLab group Maven registry
 #        GITLAB_API_V4_URL   -> the in-cluster GitLab API v4 URL (e.g. https://gitlab.<tailnet>/api/v4)
 #        GITLAB_GROUP_ID     -> the HugMesh GitLab group id
-#   3. Branch protection on `main`: require the "build" check below to pass before merge
-#      (Settings → Branches → Protect main → Require status checks → select "build").
+#      OPTIONAL: NVD_API_KEY -> speeds the Dependency-Check feed sync in `sca`
+#      (the scan runs without it, just slower on a cold cache).
+#   3. Lift the GitHub plan/billing block: private-repo branch protection needs
+#      GitHub Pro (or Team), and github-hosted minutes need the payment failure
+#      cleared. Either that, or make the repo public.
+#   4. THEN branch protection on `main`: require the "build" check before merge
+#      (Settings → Branches → Protect main → Require status checks → "build").
+#      `sca` is deliberately NOT a candidate for that list — see its comment.
 # ─────────────────────────────────────────────────────────────────────────────
 name: CI
 
@@ -60,6 +101,15 @@ jobs:
       # disabled — the runner reaps its own short-lived containers, matching .gitlab-ci.yml).
       # settings.xml resolves the private hugmesh-parent/commons from the GitLab group
       # Maven registry via the secrets mapped to its ${env.*} placeholders (NO secret in git).
+      # Pure-text cross-check of the constants the Makefile, this workflow, the
+      # Dockerfile and .gitlab-ci.yml must agree on (JDK major, SCA CVSS gate).
+      # Costs milliseconds and cannot flake; runs BEFORE the build so a drifted
+      # pin is the first thing in the log rather than the last. The same script
+      # runs first in .gitlab-ci.yml's `test` job, which is the pipeline that
+      # actually executes today.
+      - name: CI parity guard (constants must not drift)
+        run: bash scripts/ci-parity-guard.sh
+
       - name: Build + test (merge gate)
         env:
           CI_JOB_TOKEN: ${{ secrets.GITLAB_MAVEN_TOKEN }}
@@ -68,3 +118,166 @@ jobs:
           TESTCONTAINERS_RYUK_DISABLED: "true"
           MAVEN_OPTS: "-Dapi.version=1.43"
         run: ./mvnw -B -s settings.xml clean verify
+
+  # ---------------------------------------------------------------------------
+  # sca — OWASP Dependency-Check, the GitHub-side port of `.gitlab-ci.yml`'s
+  # `pentest:sca` (which `extends: .pentest-sca` from the generator's
+  # tests/pentest/ci/pentest-stage.gitlab-ci.yml). Closes the SCA half of the CI
+  # parity gap in hugmesh/hugmesh-forum-bff-api#2.
+  #
+  # DELIBERATELY NON-BLOCKING. `continue-on-error: true` here is the exact
+  # analogue of `allow_failure: true` on `pentest:sca` in .gitlab-ci.yml. That
+  # posture is policy, not an oversight, and this port does not change it: making
+  # SCA merge-blocking is an operator decision, recorded as a numbered box on
+  # issue #2. Because a failing continue-on-error job still renders as a green
+  # check, the last step writes the verdict to the run summary — a non-blocking
+  # failure that nobody can read is the same as no scan at all.
+  #
+  # PARITY NOTES — this is a port, so it keeps the GitLab job's choices even
+  # where a fresh design would differ:
+  #   * `owasp/dependency-check:latest` is unpinned, matching `.pentest-sca`'s
+  #     `image:`. Pinning it here alone would make the two scans diverge silently.
+  #   * `--failOnCVSS 7` is `.pentest-sca`'s SCA_FAIL_CVSS default, which this
+  #     repo's thin `pentest:sca` job does not override.
+  #   * `needs: [build]` reproduces GitLab's stage ordering (test -> ... ->
+  #     pentest): a red test stage stops the pipeline before SCA there too.
+  #     TRADEOFF, stated because it bites TODAY: a red — or cancelled — `build`
+  #     SKIPS this job entirely, and a skipped job writes no
+  #     $GITHUB_STEP_SUMMARY, so the "DID NOT RUN, treat it as NO COVERAGE" net
+  #     below is unreachable in exactly the scenario that occurs on every run
+  #     right now (build cancelled at the 24h queue limit). Dropping `needs:`
+  #     would fix that but would stop mirroring GitLab's stage order; it is a
+  #     numbered box on issue #2, not a silent choice.
+  #   * The GitLab job also runs on `$CI_PIPELINE_SOURCE == "schedule"`; there is
+  #     no schedule trigger on this workflow, so that leg is not ported.
+  #   * NOT PORTED — `artifacts.reports.sast:` (pentest-stage.gitlab-ci.yml:90-91)
+  #     maps the SARIF into GitLab's MR security widget, which is the one thing
+  #     that makes an allow_failure scan readable per-finding without opening the
+  #     raw log. The Actions analogue is `github/codeql-action/upload-sarif`, and
+  #     on a PRIVATE repo that needs GitHub Advanced Security — i.e. the SAME
+  #     plan block as branch protection above. So the SARIF is generated
+  #     (`--format SARIF`) and uploaded only as a plain build artifact; the
+  #     findings do not surface in a code-scanning view. Tracked on issue #2.
+  # The one intentional deviation: `--user $(id -u):$(id -g)`. GitLab runs this
+  # image as its own user inside a job container it then throws away; here the
+  # container writes into a PERSISTENT self-hosted runner workspace, and a
+  # root-owned reports/ or .nvd-cache/ would break the next actions/checkout.
+  # ---------------------------------------------------------------------------
+  sca:
+    name: sca (OWASP Dependency-Check, non-blocking)
+    needs: [build]
+    continue-on-error: true
+    runs-on: [self-hosted, hugmesh-x86]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Say WHY the scan cannot run, and fail — never report success having
+      # scanned nothing. The whole point of the job is the finding it produces;
+      # a silent skip is indistinguishable from a clean bill of health, and this
+      # job is non-blocking, so a skip would be invisible twice over.
+      - name: Require Docker (say WHY, never silently skip)
+        run: |
+          set -euo pipefail
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "FATAL: no docker on this runner. The SCA job runs the"
+            echo "       owasp/dependency-check image, so a runner without Docker"
+            echo "       CANNOT scan anything. Register a runner matching the"
+            echo "       GitLab privileged x86 shell runner, or drop this job."
+            exit 1
+          fi
+          if ! docker version >/dev/null 2>&1; then
+            echo "FATAL: docker is on PATH but the daemon is unreachable"
+            echo "       (permissions on /var/run/docker.sock, or it is not running)."
+            echo "       No scan can run here."
+            exit 1
+          fi
+
+      # Month-keyed so the NVD feed re-syncs monthly instead of on every run,
+      # mirroring the GitLab job's `nvd-cache-$CI_COMMIT_REF_SLUG-$(date +%Y%m)`.
+      - name: Compute the NVD feed cache key
+        id: nvd
+        run: echo "month=$(date -u +%Y%m)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore/save the NVD feed cache
+        uses: actions/cache@v4
+        with:
+          path: .nvd-cache
+          key: nvd-cache-${{ steps.nvd.outputs.month }}
+          restore-keys: |
+            nvd-cache-
+
+      - name: OWASP Dependency-Check
+        id: scan
+        env:
+          # Optional. Absent, Dependency-Check still syncs the feed, just slower.
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+          SCA_SCAN_DIR: "."
+          SCA_PROJECT: hugmesh-forum-bff-api
+          SCA_FAIL_CVSS: "7"
+        run: |
+          set -uo pipefail
+          mkdir -p .nvd-cache reports/sca
+          NVD_ARGS=()
+          if [ -n "${NVD_API_KEY:-}" ]; then
+            NVD_ARGS=(--nvdApiKey "${NVD_API_KEY}")
+          fi
+          set +e
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -v "${GITHUB_WORKSPACE}:/workspace" \
+            -w /workspace \
+            --entrypoint "" \
+            owasp/dependency-check:latest \
+            /usr/share/dependency-check/bin/dependency-check.sh \
+              --project "${SCA_PROJECT}" \
+              --scan "${SCA_SCAN_DIR}" \
+              --out "reports/sca" \
+              --data ".nvd-cache" \
+              --failOnCVSS "${SCA_FAIL_CVSS}" \
+              --enableExperimental \
+              --format HTML --format SARIF --format JSON \
+              ${NVD_ARGS[@]+"${NVD_ARGS[@]}"}
+          rc=$?
+          set -e
+          echo "rc=${rc}" >> "$GITHUB_OUTPUT"
+          exit "${rc}"
+
+      - name: Upload the SCA reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: |
+            reports/sca/dependency-check-report.html
+            reports/sca/dependency-check-report.sarif
+            reports/sca/dependency-check-report.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      # A job marked continue-on-error renders as a PASSING check even when it
+      # failed, so the verdict has to be written somewhere a human actually looks.
+      - name: Report the SCA verdict
+        if: always()
+        env:
+          SCAN_RC: ${{ steps.scan.outputs.rc }}
+        run: |
+          set -euo pipefail
+          rc="${SCAN_RC:-}"
+          {
+            echo '## OWASP Dependency-Check (SCA)'
+            echo
+            if [ -z "${rc}" ]; then
+              echo '**DID NOT RUN.** The scan step reported no exit code, so this'
+              echo 'job scanned nothing. Treat it as NO COVERAGE, not as a pass.'
+            elif [ "${rc}" = "0" ]; then
+              echo '**PASS** — no dependency finding at or above CVSS 7.'
+            else
+              echo "**FAIL (exit ${rc})** — Dependency-Check reported a finding at or"
+              echo 'above CVSS 7, or the scan itself errored.'
+              echo
+              echo 'This job is `continue-on-error: true`, mirroring `allow_failure: true`'
+              echo 'on `pentest:sca` in `.gitlab-ci.yml`, so it does NOT block the merge.'
+              echo 'Open `dependency-check-report.html` in this run'"'"'s artifacts.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
