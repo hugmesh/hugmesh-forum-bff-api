@@ -12,7 +12,10 @@ target/
 # Left untracked-but-unignored they show up as a dirty tree, which matters here:
 # .gitlab-ci.yml's `test` job ends in `git diff --exit-code` to catch a build that
 # rewrites a committed artefact, and scan scratch must not be able to muddy that.
-.dep-check-data/
-.nvd-cache/
-reports/
-out/pentest/
+# Anchored with a leading `/`: unanchored, `reports/` would also hide any
+# directory named `reports` anywhere under src/, which is not what this block
+# says it does — every path here is created at the repo ROOT.
+/.dep-check-data/
+/.nvd-cache/
+/reports/
+/out/pentest/

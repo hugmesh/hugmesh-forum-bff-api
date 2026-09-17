@@ -101,6 +101,15 @@ jobs:
       # disabled — the runner reaps its own short-lived containers, matching .gitlab-ci.yml).
       # settings.xml resolves the private hugmesh-parent/commons from the GitLab group
       # Maven registry via the secrets mapped to its ${env.*} placeholders (NO secret in git).
+      # Pure-text cross-check of the constants the Makefile, this workflow, the
+      # Dockerfile and .gitlab-ci.yml must agree on (JDK major, SCA CVSS gate).
+      # Costs milliseconds and cannot flake; runs BEFORE the build so a drifted
+      # pin is the first thing in the log rather than the last. The same script
+      # runs first in .gitlab-ci.yml's `test` job, which is the pipeline that
+      # actually executes today.
+      - name: CI parity guard (constants must not drift)
+        run: bash scripts/ci-parity-guard.sh
+
       - name: Build + test (merge gate)
         env:
           CI_JOB_TOKEN: ${{ secrets.GITLAB_MAVEN_TOKEN }}
@@ -132,8 +141,23 @@ jobs:
   #     repo's thin `pentest:sca` job does not override.
   #   * `needs: [build]` reproduces GitLab's stage ordering (test -> ... ->
   #     pentest): a red test stage stops the pipeline before SCA there too.
+  #     TRADEOFF, stated because it bites TODAY: a red — or cancelled — `build`
+  #     SKIPS this job entirely, and a skipped job writes no
+  #     $GITHUB_STEP_SUMMARY, so the "DID NOT RUN, treat it as NO COVERAGE" net
+  #     below is unreachable in exactly the scenario that occurs on every run
+  #     right now (build cancelled at the 24h queue limit). Dropping `needs:`
+  #     would fix that but would stop mirroring GitLab's stage order; it is a
+  #     numbered box on issue #2, not a silent choice.
   #   * The GitLab job also runs on `$CI_PIPELINE_SOURCE == "schedule"`; there is
   #     no schedule trigger on this workflow, so that leg is not ported.
+  #   * NOT PORTED — `artifacts.reports.sast:` (pentest-stage.gitlab-ci.yml:90-91)
+  #     maps the SARIF into GitLab's MR security widget, which is the one thing
+  #     that makes an allow_failure scan readable per-finding without opening the
+  #     raw log. The Actions analogue is `github/codeql-action/upload-sarif`, and
+  #     on a PRIVATE repo that needs GitHub Advanced Security — i.e. the SAME
+  #     plan block as branch protection above. So the SARIF is generated
+  #     (`--format SARIF`) and uploaded only as a plain build artifact; the
+  #     findings do not surface in a code-scanning view. Tracked on issue #2.
   # The one intentional deviation: `--user $(id -u):$(id -g)`. GitLab runs this
   # image as its own user inside a job container it then throws away; here the
   # container writes into a PERSISTENT self-hosted runner workspace, and a
