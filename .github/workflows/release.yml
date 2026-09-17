@@ -5,14 +5,28 @@
 # this never runs on its own. A human flips it on (adds a push/tag trigger)
 # once the org is ready to cut real releases.
 #
+# NOTHING IN THIS FILE HAS EVER EXECUTED. There is no green run to point at and
+# this change does not produce one: no self-hosted runner carrying the
+# `hugmesh-x86` label is registered on this repo (measured 2026-09-17,
+# GET /repos/hugmesh/hugmesh-forum-bff-api/actions/runners -> total_count 0),
+# and github-HOSTED runners are billing-blocked account-wide. Registering the
+# runner is operator-held. See .github/SELF_HOSTED_RUNNER.md.
+#
 # Modeled on this repo's `.gitlab-ci.yml` `build:image` job: same multi-stage
 # Dockerfile, same BuildKit secret + build-args for resolving the private
 # hugmesh-commons/hugmesh-parent Maven artifacts during `./mvnw package`.
 # Only the registry destination differs (GHCR instead of the in-cluster
 # GitLab container registry).
 #
+# RUNNER — must be SELF-HOSTED in-cluster (tailnet), matching ci.yml.
+# The build stage resolves hugmesh-parent / hugmesh-commons from the in-cluster
+# GitLab group Maven registry, which is reachable only over the tailnet. A
+# github.com-hosted runner cannot reach it at all, so `ubuntu-latest` here could
+# never have worked even with every secret set.
+#
 # PREREQS (one-time, org/repo settings — not something this workflow can set):
-#   - Repo/org secrets mirroring the ones ci.yml already documents:
+#   - A self-hosted runner labelled `hugmesh-x86` — see .github/SELF_HOSTED_RUNNER.md
+#   - Repo/org SECRETS (all three are `secrets.`, never `vars.` — see below):
 #       GITLAB_MAVEN_TOKEN  -> read-scoped token for the GitLab group Maven registry
 #                              (passed into the image build as the BuildKit
 #                              `ci_job_token` secret; never an ARG/ENV/layer)
@@ -20,6 +34,28 @@
 #       GITLAB_GROUP_ID     -> the HugMesh GitLab group id
 #   - `packages: write` is granted below via GITHUB_TOKEN; no extra PAT needed
 #     to push to this repo's own GHCR package.
+#
+# WHY ALL THREE ARE `secrets.` AND WHY THE PREFLIGHT EXISTS (decision 43a = A)
+# `vars.X` and `secrets.X` are DIFFERENT namespaces: an org/repo secret does not
+# satisfy a `vars.` expression, and an unset `vars.` expression interpolates to
+# the empty string with no warning. This repo already used the all-secrets
+# spelling; wiki-bff and mesh-bff used a `vars.`/`secrets.` mix, so the three are
+# now unified here.
+#
+# The resulting failure is NOT loud. Measured 2026-09-17 with
+# `maven-help-plugin:3.5.1:effective-settings` against this repo's committed
+# settings.xml, with CI_API_V4_URL / GITLAB_GROUP_ID / CI_JOB_TOKEN unset:
+#
+#   <url>${env.CI_API_V4_URL}/groups/${env.GITLAB_GROUP_ID}/-/packages/maven</url>
+#   <value>${env.CI_JOB_TOKEN}</value>
+#
+# Maven does NOT interpolate an unset ${env.*} to empty — it leaves the LITERAL
+# text in the repository URL and in the Job-Token header. The same command with
+# the three set renders `https://gitlab.example/api/v4/groups/42/-/packages/maven`
+# and `tok`, so the contrast is the variable, not the plugin. The literal URL is
+# not a valid endpoint, so the build dies much later as an unresolvable parent
+# POM — a message that points at Maven, not at a missing secret. The preflight
+# step below turns that into a named, immediate failure instead.
 # ─────────────────────────────────────────────────────────────────────────────
 name: Release
 
@@ -31,12 +67,62 @@ env:
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-latest
+    # Self-hosted, in-cluster (tailnet) — see the RUNNER note above and
+    # .github/SELF_HOSTED_RUNNER.md. Same label set as ci.yml's jobs.
+    runs-on: [self-hosted, hugmesh-x86]
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v4
+
+      # Fail here, by NAME, rather than letting an unset value reach Maven as a
+      # literal ${env.*} and surface 10 minutes later as an unresolvable parent
+      # POM. Values are never echoed — only the names of what is missing.
+      - name: Preflight — required registry inputs and Docker
+        env:
+          GITLAB_MAVEN_TOKEN: ${{ secrets.GITLAB_MAVEN_TOKEN }}
+          GITLAB_API_V4_URL: ${{ secrets.GITLAB_API_V4_URL }}
+          GITLAB_GROUP_ID: ${{ secrets.GITLAB_GROUP_ID }}
+        run: |
+          set -euo pipefail
+
+          missing=()
+          [ -n "${GITLAB_MAVEN_TOKEN:-}" ] || missing+=(GITLAB_MAVEN_TOKEN)
+          [ -n "${GITLAB_API_V4_URL:-}" ]  || missing+=(GITLAB_API_V4_URL)
+          [ -n "${GITLAB_GROUP_ID:-}" ]    || missing+=(GITLAB_GROUP_ID)
+
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "FATAL: unset repo/org SECRET(S): ${missing[*]}"
+            echo
+            echo "These three feed the committed settings.xml placeholders"
+            echo "\${env.CI_JOB_TOKEN}, \${env.CI_API_V4_URL} and \${env.GITLAB_GROUP_ID}."
+            echo "Maven does NOT treat an unset one as empty: it leaves the literal"
+            echo "  \${env.CI_API_V4_URL}/groups/\${env.GITLAB_GROUP_ID}/-/packages/maven"
+            echo "in the repository URL, so the build would fail far downstream as an"
+            echo "unresolvable parent POM instead of naming the missing input."
+            echo
+            echo "All three are 'secrets.', NOT 'vars.' — they are separate namespaces,"
+            echo "and a secret does not satisfy a vars. expression. Set them under"
+            echo "Settings -> Secrets and variables -> Actions -> Secrets."
+            echo "See .github/SELF_HOSTED_RUNNER.md."
+            exit 1
+          fi
+
+          # This job builds a container image, so a runner without a usable
+          # Docker daemon can only fail obscurely inside setup-buildx.
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "FATAL: no docker on this runner; the image build cannot run."
+            echo "See .github/SELF_HOSTED_RUNNER.md for the runner requirements."
+            exit 1
+          fi
+          if ! docker version >/dev/null 2>&1; then
+            echo "FATAL: docker is on PATH but the daemon is unreachable"
+            echo "       (permissions on /var/run/docker.sock, or it is not running)."
+            exit 1
+          fi
+
+          echo "Preflight OK: all three registry secrets are set; Docker is usable."
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
