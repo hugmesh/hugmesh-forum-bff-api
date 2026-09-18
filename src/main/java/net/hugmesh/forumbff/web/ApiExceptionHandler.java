@@ -39,7 +39,28 @@ import java.util.TreeMap;
  *                               │             │  "detail": "reason or 'malformed request'"}
  * </pre>
  *
+ * <h2>Step-up signal</h2>
+ * This is ALSO the seam that stamps the platform's structured step-up signal: a
+ * {@link StepUpRequiredException} additionally carries the
+ * {@value StepUpRequiredException#SIGNAL_HEADER} response header naming the step-up flavour
+ * the caller must satisfy. The JSON body is left byte-identical — nothing is added to the
+ * shared error body, so no unrelated error's wire shape moves — and the status stays whatever
+ * the exception carries (403 for step-up; deliberately not 428, every existing client branches
+ * on 403). Any OTHER {@link ApiException}, an ordinary authz 403 included, is rendered exactly
+ * as before with NO signal header, which is what keeps a routine DENY from popping an MFA
+ * prompt in the browser.
+ *
+ * <p><b>The gate does not come through here.</b> This BFF's step-up gate lives in the filter
+ * chain ({@code SecurityConfig.stepUp}), so its refusal is rendered by
+ * {@code ForumStepUpAccessDeniedHandler} — which mints the SAME
+ * {@link StepUpRequiredException} and writes the same status, header and body, so the two
+ * renderers cannot disagree ({@code StepUpSignalContractTest} pins that). This branch is the
+ * platform-parity half (admin-bff and mod-bff render their gates through it): it is what makes
+ * a future controller-thrown step-up refusal carry the signal for free rather than shipping a
+ * 403 no client can recognise.
+ *
  * @see ApiException
+ * @see StepUpRequiredException
  */
 @RestControllerAdvice
 public class ApiExceptionHandler {
@@ -48,13 +69,23 @@ public class ApiExceptionHandler {
      * Maps a domain {@link ApiException} to a JSON error response carrying the status
      * and message the exception was constructed with.
      *
+     * <p>A {@link StepUpRequiredException} — the one {@link ApiException} subtype with a wire
+     * contract of its own — additionally carries the
+     * {@value StepUpRequiredException#SIGNAL_HEADER} header. Nothing else about the response
+     * changes, and no other exception gains a header.
+     *
      * @param ex the thrown {@link ApiException}
      * @return a {@link ResponseEntity} with the exception's HTTP status and a
-     *         {@code {"error": "message"}} body
+     *         {@code {"error": "message"}} body, plus the step-up signal header when (and
+     *         only when) {@code ex} is a {@link StepUpRequiredException}
      */
     @ExceptionHandler(ApiException.class)
     public ResponseEntity<Map<String, Object>> handle(ApiException ex) {
-        return ResponseEntity.status(ex.status()).body(Map.of("error", ex.getMessage()));
+        ResponseEntity.BodyBuilder response = ResponseEntity.status(ex.status());
+        if (ex instanceof StepUpRequiredException stepUp) {
+            response = response.header(StepUpRequiredException.SIGNAL_HEADER, stepUp.retryHeader());
+        }
+        return response.body(Map.of("error", ex.getMessage()));
     }
 
     /**

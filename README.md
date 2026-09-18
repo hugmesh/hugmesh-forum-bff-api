@@ -206,6 +206,58 @@ working the moment the platform flips it — no follow-up change is needed here.
 ordinary `/bff/forum/**` floor is deliberately *not* step-up gated: reading and posting
 in the forum is not a privileged action.
 
+#### What a step-up refusal looks like on the wire
+
+A step-up denial and an ordinary role denial used to be the same bare `403` — no body,
+no header — so no client could tell "you are not an admin" (where an MFA challenge is a
+dead end) from "you are an admin who has not stepped up" (where it is the whole fix).
+`SecurityConfig.stepUp` now records which conjunct denied, and
+`ForumStepUpAccessDeniedHandler` renders that one case in the platform's shared shape —
+the same contract hugmesh-admin-bff-api defines and hugmesh-mod-bff-api speaks:
+
+| | |
+| --- | --- |
+| **Status** | `403`, unchanged. Deliberately **not** 428 — every existing client branches on 403, and a status change is not rolling-deployable. |
+| **Header** | `X-Step-Up-Required: X-Forum-StepUp` |
+| **Body** | `{"error":"<verb> requires step-up re-authentication (present X-Forum-StepUp)"}`, where `<verb>` is `forum administration` or `forum moderation`. The literal phrase `requires step-up` is the legacy leg for a client with no structured detection, and it is composed **by the constructor**, so no reword can strip it. |
+
+`X-Forum-StepUp` is a **flavour name, not a request header this service reads**. This
+gate has no token leg — it consumes the `MFA_SATISFIED` marker and nothing else — so the
+client follow-up is *complete a challenge, then retry the same request unchanged*. The
+flavour is advertised so it is observable, and so a future token leg needs no client
+change.
+
+**Which denials carry the signal, and which must not.** The header appears if and only
+if `stepUp`'s base rule had already **granted** and the `MFA_SATISFIED` leg is what
+refused. So:
+
+| Denial | Signal? |
+| --- | --- |
+| Admin path, `ROLE_ADMIN` but no / stale stamp | ✅ |
+| Moderation path, authenticated but no / stale stamp | ✅ |
+| Admin path, caller is not an admin (even fully stepped up) | ❌ — a challenge could not let them through |
+| `ModerationController`'s method-level MOD∧FORUM refusal | ❌ — the path gate granted; nothing recorded |
+| No token at all (`401`) | ❌ — never reaches the handler; the authentication entry point answers |
+| Anything at all while `app.mfa.enabled=false` | ❌ — `stepUp` returns the base rule unwrapped, so nothing can record |
+
+**Every other 403 is byte-identical to before.** Installing an explicit
+`accessDeniedHandler` makes `ServerHttpSecurity` discard its default ones wholesale, so
+the pass-through delegates to `BearerTokenServerAccessDeniedHandler` — what Spring
+installs on a chain with `oauth2ResourceServer`, which both of ours have. Measured: a
+real (authenticated) non-step-up 403 still carries the full RFC 6750
+`WWW-Authenticate: Bearer error="insufficient_scope", …` challenge and an empty body.
+Delegating to `HttpStatusServerAccessDeniedHandler` instead would have destroyed that
+challenge and invented a `text/plain` `Access Denied` body on every refusal this service
+sends. `StepUpAccessDeniedWiringTest` compares our handler against Spring's own at
+runtime — status, every header, body — on both the authenticated and unauthenticated
+shapes, and asserts both profile chains actually dispatch through ours.
+
+> The OpenAPI spec is deliberately **not** annotated with this header. The gate is a
+> filter-chain rule over two path prefixes, not a per-operation annotation, so it applies
+> uniformly to every operation under them; documenting it would mean an `@ApiResponse` on
+> every method of `ForumAdminController` and `ModerationController` for a response the
+> chain produces before any of them is reached.
+
 ### Casdoor → Spring authorities
 
 `SecurityConfig.casdoorAuthoritiesConverter` translates a Casdoor JWT into Spring
