@@ -8,6 +8,7 @@ import org.springframework.security.web.server.WebFilterChainProxy;
 import org.springframework.test.web.reactive.server.WebTestClient;
 import org.springframework.web.server.ServerWebExchange;
 import net.hugmesh.commons.security.DomainRegistry;
+import net.hugmesh.forumbff.security.ForumStepUpAccessDeniedHandler;
 
 /**
  * Shared scaffolding for the forum-BFF SECURITY-SLICE tests — builds a
@@ -35,6 +36,14 @@ import net.hugmesh.commons.security.DomainRegistry;
 abstract class SecuritySliceSupport {
 
     /**
+     * The production access-denied renderer the chain beans take as a parameter. Stateless, so
+     * one instance serves every slice — and using the REAL one (not a stub) is what makes the
+     * step-up signal, and the untouched wire shape of every other 403, observable from a slice.
+     */
+    static final ForumStepUpAccessDeniedHandler STEP_UP_ACCESS_DENIED =
+            new ForumStepUpAccessDeniedHandler();
+
+    /**
      * Build a {@link WebTestClient} bound to {@code controllers}, routed THROUGH the
      * real dev/test {@link SecurityConfig#devFilterChain} built from a fresh
      * {@link ServerHttpSecurity}. The chain is installed as a {@link WebFilterChainProxy}
@@ -56,7 +65,7 @@ abstract class SecuritySliceSupport {
             Object... controllers) {
 
         SecurityConfig config = new SecurityConfig(registry, tenantResolver, false, 600000L);
-        SecurityWebFilterChain chain = config.devFilterChain(ServerHttpSecurity.http());
+        SecurityWebFilterChain chain = config.devFilterChain(ServerHttpSecurity.http(), STEP_UP_ACCESS_DENIED);
         return bind(chain, controllers);
     }
 
@@ -72,7 +81,7 @@ abstract class SecuritySliceSupport {
             Object... controllers) {
 
         SecurityConfig config = new SecurityConfig(registry, tenantResolver, false, 600000L);
-        SecurityWebFilterChain chain = config.filterChain(ServerHttpSecurity.http());
+        SecurityWebFilterChain chain = config.filterChain(ServerHttpSecurity.http(), STEP_UP_ACCESS_DENIED);
         return bind(chain, controllers);
     }
 
@@ -93,7 +102,29 @@ abstract class SecuritySliceSupport {
             Object... controllers) {
 
         SecurityConfig config = new SecurityConfig(registry, tenantResolver, true, 600000L);
-        SecurityWebFilterChain chain = config.devFilterChain(ServerHttpSecurity.http());
+        SecurityWebFilterChain chain = config.devFilterChain(ServerHttpSecurity.http(), STEP_UP_ACCESS_DENIED);
+        return bind(chain, controllers);
+    }
+
+    /**
+     * Like {@link #mfaSliceClient} but routed through the PROD
+     * {@link SecurityConfig#filterChain} — the {@code @Profile("!dev & !test")} chain that
+     * every deployment of this service actually runs (compose and the cluster both come up
+     * profile-less).
+     *
+     * <p>It exists because every other slice in this repo builds the DEV chain, so a
+     * {@code .exceptionHandling(...)} deleted from the prod chain alone would leave the whole
+     * suite green while production lost the step-up signal entirely — the exact mutation a
+     * skeptic round caught in hugmesh-mod-bff-api PR #18, on that repo's other chain.
+     */
+    static WebTestClient mfaProdSliceClient(
+            DomainRegistry registry,
+            ObjectProvider<ReactiveAuthenticationManagerResolver<ServerWebExchange>> tenantResolver,
+            Object... controllers) {
+
+        SecurityConfig config = new SecurityConfig(registry, tenantResolver, true, 600000L);
+        SecurityWebFilterChain chain =
+                config.filterChain(ServerHttpSecurity.http(), STEP_UP_ACCESS_DENIED);
         return bind(chain, controllers);
     }
 

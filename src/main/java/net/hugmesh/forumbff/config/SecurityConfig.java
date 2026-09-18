@@ -30,6 +30,8 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import net.hugmesh.commons.security.CasdoorAuthorities;
 import net.hugmesh.commons.security.DomainRegistry;
+import net.hugmesh.forumbff.security.ForumStepUpAccessDeniedHandler;
+import net.hugmesh.forumbff.security.ForumStepUpGate;
 import net.hugmesh.forumbff.security.PrincipalDomain;
 import net.hugmesh.forumbff.security.Roles;
 
@@ -159,7 +161,8 @@ public class SecurityConfig {
         // app.mfa.enabled is off (that is exactly what .hasAnyRole delegates to), plus
         // the MFA_SATISFIED marker once the platform turns MFA on.
         ex.pathMatchers("/bff/forum/admin/**").access(
-                stepUp(AuthorityReactiveAuthorizationManager.hasAnyRole("ADMIN", "SUPERADMIN")));
+                stepUp(AuthorityReactiveAuthorizationManager.hasAnyRole("ADMIN", "SUPERADMIN"),
+                        ForumStepUpGate.Surface.ADMIN));
         // The moderation seam — the SECOND D8 step-up surface, declared BEFORE the floor
         // for the same reason. The coarse layer still only FLOORS it to .authenticated()
         // (what inheriting the /bff/forum/** rule below already did, byte for byte)
@@ -167,7 +170,8 @@ public class SecurityConfig {
         // stays a METHOD gate in ModerationController. Declaring the path here adds the
         // step-up leg and NOTHING else, and only once app.mfa.enabled is on.
         ex.pathMatchers("/bff/forum/moderation/**").access(
-                stepUp(AuthenticatedReactiveAuthorizationManager.authenticated()));
+                stepUp(AuthenticatedReactiveAuthorizationManager.authenticated(),
+                        ForumStepUpGate.Surface.MODERATION));
         // The whole forum surface — the ROLE_FORUM floor is enforced at the gateway, so
         // .authenticated() proves authentication here. The moderation AND-of-MOD+FORUM
         // gate + ownership are re-checked at the method level (@PreAuthorize) in the
@@ -195,9 +199,21 @@ public class SecurityConfig {
      * the platform flips the flag — no follow-up change needed in this repo. {@code base}
      * is evaluated FIRST and short-circuits on deny, so the step-up leg can only ever
      * NARROW an already-granted decision, never widen one.
+     *
+     * <p><b>It also RECORDS which conjunct denied</b>, and that is the whole of the #15 fix.
+     * When {@code base} has granted and the marker leg refuses, {@code surface} is stamped on
+     * the exchange ({@link ForumStepUpGate#recordDenial}) so
+     * {@link ForumStepUpAccessDeniedHandler} can render a refusal a client can RECOGNISE —
+     * 403 plus {@code X-Step-Up-Required: X-Forum-StepUp} — instead of the bare 403 that is
+     * indistinguishable from "you are not an admin". Nothing about WHAT is denied moves: the
+     * recording happens strictly AFTER the decision, on the deny branch only, and the handler
+     * can only ever write a 403. A role denial never reaches the recording line, which is
+     * exactly why a plain user's 403 carries no signal and forum-ui never offers them a
+     * challenge that could not let them through.
      */
     private ReactiveAuthorizationManager<AuthorizationContext> stepUp(
-            ReactiveAuthorizationManager<AuthorizationContext> base) {
+            ReactiveAuthorizationManager<AuthorizationContext> base,
+            ForumStepUpGate.Surface surface) {
         if (!mfaEnabled) {
             return base;
         }
@@ -206,6 +222,11 @@ public class SecurityConfig {
         return (authentication, context) -> base.authorize(authentication, context)
                 .flatMap(result -> result.isGranted()
                         ? mfaMarker.authorize(authentication, context)
+                                .doOnNext(stepUpResult -> {
+                                    if (!stepUpResult.isGranted()) {
+                                        ForumStepUpGate.recordDenial(context.getExchange(), surface);
+                                    }
+                                })
                         : Mono.just(result));
     }
 
@@ -249,6 +270,23 @@ public class SecurityConfig {
     }
 
     /**
+     * The chain-wide access-denied renderer, installed on BOTH profile chains so the two
+     * cannot drift. It is a PASS-THROUGH for every denial except the one
+     * {@link #stepUp} recorded as a step-up refusal, which it renders with the platform's
+     * {@code X-Step-Up-Required} signal — see {@link ForumStepUpAccessDeniedHandler} for why
+     * the pass-through delegates to the BEARER handler rather than the bare status one.
+     *
+     * <p>Stateless, so one instance serves both chains; taken as a METHOD PARAMETER by the
+     * chain beans rather than read from a field so a slice test can build either chain from a
+     * bare {@code ServerHttpSecurity.http()} with no ApplicationContext and still get the
+     * production wiring.
+     */
+    @Bean
+    ForumStepUpAccessDeniedHandler forumStepUpAccessDeniedHandler() {
+        return new ForumStepUpAccessDeniedHandler();
+    }
+
+    /**
      * Dev / test profile: the OpenAPI spec + Swagger UI are PUBLIC so
      * {@code gen:fetch} (ng-openapi-gen) and the docs pipeline can curl
      * {@code /v3/api-docs} locally without a Casdoor token. Activate with
@@ -257,10 +295,12 @@ public class SecurityConfig {
      */
     @Bean
     @Profile({"dev", "test"})
-    SecurityWebFilterChain devFilterChain(ServerHttpSecurity http) {
+    SecurityWebFilterChain devFilterChain(ServerHttpSecurity http,
+                                          ForumStepUpAccessDeniedHandler stepUpAccessDenied) {
         return http
                 .csrf(ServerHttpSecurity.CsrfSpec::disable)
                 .headers(SecurityConfig::hardenedHeaders)
+                .exceptionHandling(e -> e.accessDeniedHandler(stepUpAccessDenied))
                 .authorizeExchange(ex -> {
                     commonRoutes(ex);
                     ex.pathMatchers(SPEC_PATHS).permitAll();
@@ -279,10 +319,12 @@ public class SecurityConfig {
      */
     @Bean
     @Profile("!dev & !test")
-    SecurityWebFilterChain filterChain(ServerHttpSecurity http) {
+    SecurityWebFilterChain filterChain(ServerHttpSecurity http,
+                                       ForumStepUpAccessDeniedHandler stepUpAccessDenied) {
         return http
                 .csrf(ServerHttpSecurity.CsrfSpec::disable)
                 .headers(SecurityConfig::hardenedHeaders)
+                .exceptionHandling(e -> e.accessDeniedHandler(stepUpAccessDenied))
                 .authorizeExchange(ex -> {
                     commonRoutes(ex);
                     ex.pathMatchers(SPEC_PATHS).hasAnyRole("ADMIN", "SUPERADMIN");
