@@ -39,6 +39,16 @@ test:
     TESTCONTAINERS_RYUK_DISABLED: "true"
     MAVEN_OPTS: "-Dapi.version=1.43"
   script:
+    # CONSTANTS FIRST. scripts/ci-parity-guard.sh cross-checks the pins that this
+    # file, .github/workflows/ci.yml, Dockerfile and Makefile must agree on (JDK
+    # major; the SCA CVSS gate, against the generator's .pentest-sca default when
+    # that checkout is reachable). Makefile shipped BOTH of those drifted at once
+    # — SCA_FAIL_CVSS 9 against CI's 7, and JDK_IMAGE 21 for a release-25 build —
+    # and nothing anywhere went red, because the only reader was a human typing
+    # `make -n`. This is pure text (no network, no Maven, no Docker), takes
+    # milliseconds, and runs before the expensive job so a drifted pin is the
+    # first thing in the log.
+    - bash scripts/ci-parity-guard.sh
     # hugmesh-commons (and hugmesh-parent) are PRIVATE — NOT on Maven Central.
     # The committed settings.xml resolves them from the org GitLab group Maven
     # registry, authenticated by the GitLab-injected CI_JOB_TOKEN. CI_API_V4_URL is

@@ -1,3 +1,21 @@
 target/
 *.class
 .env
+
+# Pen-test / SCA scratch. None of these are build output — they are the scan's
+# own working dirs, and every one of them is created INSIDE the checkout:
+#   .dep-check-data/  Makefile pentest-sca USE_DOCKER=1 NVD database mount
+#   .nvd-cache/       --data dir for the CI SCA scans (.gitlab-ci.yml pentest:sca
+#                     and the `sca` job in .github/workflows/ci.yml)
+#   reports/          dependency-check --out (HTML/SARIF/JSON)
+#   out/pentest/      PENTEST_REPORTS for the shared DAST harness
+# Left untracked-but-unignored they show up as a dirty tree, which matters here:
+# .gitlab-ci.yml's `test` job ends in `git diff --exit-code` to catch a build that
+# rewrites a committed artefact, and scan scratch must not be able to muddy that.
+# Anchored with a leading `/`: unanchored, `reports/` would also hide any
+# directory named `reports` anywhere under src/, which is not what this block
+# says it does — every path here is created at the repo ROOT.
+/.dep-check-data/
+/.nvd-cache/
+/reports/
+/out/pentest/
