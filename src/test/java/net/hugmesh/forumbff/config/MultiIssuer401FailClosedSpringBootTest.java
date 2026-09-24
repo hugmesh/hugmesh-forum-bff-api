@@ -54,9 +54,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p><b>Offline + deterministic.</b> Each brand's OIDC discovery doc + JWKS is served by
  * an in-process JDK {@code HttpServer} on {@code 127.0.0.1} (see {@link TestIssuer}), so
- * {@code ReactiveJwtDecoders.fromIssuerLocation(...)} — and the Spring-Boot-auto-configured
- * back-compat decoder built from {@code issuer-uri} (pointed at brand X) — resolve with NO
- * network egress and NO live Casdoor. The DB is a real Testcontainers Postgres wired by
+ * {@code ReactiveJwtDecoders.fromIssuerLocation(...)} (brand Y) and the back-compat
+ * {@code withJwkSetUri(...)} decoder (brand X, whose issuer-uri AND jwk-set-uri are BOTH
+ * pinned to its in-process server) resolve with NO network egress and NO live Casdoor. The DB is a real Testcontainers Postgres wired by
  * {@link PostgresTestSupport} (r2dbc + Liquibase on a fresh per-class database) so the
  * full context boots over the real schema.
  *
@@ -95,10 +95,14 @@ class MultiIssuer401FailClosedSpringBootTest extends PostgresTestSupport {
      *   <li>{@code app.tenancy.issuers} = brandX=brandx,brandY=brandy — contains '=', so
      *       {@link TenancyResourceServerConfig}'s {@code @ConditionalOnExpression} fires
      *       and {@link DomainRegistry#isMultiIssuer()} is true (two entries);</li>
-     *   <li>{@code spring.security.oauth2.resourceserver.jwt.issuer-uri} = brand X — the
-     *       back-compat single issuer. Spring Boot auto-configures a {@code ReactiveJwtDecoder}
-     *       from it at startup (discovery against brand X's in-process server, offline), so
-     *       the context boots even though the resolver path is the one actually used.</li>
+     *   <li>{@code spring.security.oauth2.resourceserver.jwt.issuer-uri} AND
+     *       {@code ...jwt.jwk-set-uri} = brand X — the lone back-compat issuer. The shared
+     *       {@link TenancyResourceServerConfig} validates THAT issuer through
+     *       {@code withJwkSetUri(jwk-set-uri)} (discovery-free) and every other listed brand
+     *       through OIDC discovery, so the two MUST name the same in-process server:
+     *       overriding only issuer-uri left jwk-set-uri at application.yml's
+     *       {@code https://id.hugmesh.net/.well-known/jwks}, and every brand-X token 500'd
+     *       off-host (hugmesh-forum-bff-api#19).</li>
      * </ul>
      * The {@code FOREIGN} issuer is deliberately absent from both properties.
      */
@@ -106,7 +110,8 @@ class MultiIssuer401FailClosedSpringBootTest extends PostgresTestSupport {
     static void tenancyIssuers(DynamicPropertyRegistry registry) {
         registry.add("app.tenancy.issuers",
                 () -> BRAND_X.issuerUri() + "=brandx," + BRAND_Y.issuerUri() + "=brandy");
-        registry.add("spring.security.oauth2.resourceserver.jwt.issuer-uri", BRAND_X::issuerUri);
+        // issuer-uri AND jwk-set-uri, both from BRAND_X (hugmesh-forum-bff-api#19).
+        TestIssuer.registerAsBackCompatIssuer(registry, BRAND_X);
     }
 
     @AfterAll
