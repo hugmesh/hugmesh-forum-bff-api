@@ -10,6 +10,7 @@ import com.nimbusds.jose.jwk.gen.RSAKeyGenerator;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import com.sun.net.httpserver.HttpServer;
+import org.springframework.test.context.DynamicPropertyRegistry;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -25,7 +26,9 @@ import java.util.UUID;
  * REUSABLE multi-issuer test fixture — the cornerstone of the copyable multi-issuer
  * security-slice pattern (see {@code docs/testing/MULTI-ISSUER-SLICE.md}). COPIED
  * VERBATIM from the hugmesh-gateway reference seam (PR #34, branch
- * {@code test/security-slice-keystone}); only the package declaration changed.
+ * {@code test/security-slice-keystone}); only the package declaration changed, plus
+ * ONE forum-bff addition: {@link #jwkSetUri()} and {@link #registerAsBackCompatIssuer}
+ * (hugmesh-forum-bff-api#19, see the latter's javadoc).
  *
  * <p>Each {@code TestIssuer} stands up a tiny in-process HTTP server (JDK
  * {@link HttpServer}, bound to {@code 127.0.0.1}) that serves exactly what Spring
@@ -87,6 +90,37 @@ public final class TestIssuer implements AutoCloseable {
     /** The issuer URI — use as the LHS of an {@code app.tenancy.issuers} pair. */
     public String issuerUri() {
         return issuerUri;
+    }
+
+    /** The full URL this issuer serves its public JWK set at (what discovery advertises
+     *  as {@code jwks_uri}). NOTE the {@code .json} suffix: application.yml's derived
+     *  default ({@code <issuer>/.well-known/jwks}) would 404 here, so always pass this. */
+    public String jwkSetUri() {
+        return issuerUri + "/.well-known/jwks.json";
+    }
+
+    /**
+     * Register {@code issuer} as the lone back-compat issuer of a full-context test:
+     * sets BOTH {@code spring.security.oauth2.resourceserver.jwt.issuer-uri} AND
+     * {@code ...jwt.jwk-set-uri} from the SAME in-process issuer, so they can never drift.
+     *
+     * <p><b>Why both (hugmesh-forum-bff-api#19).</b> application.yml pins
+     * {@code jwk-set-uri} to {@code ${CASDOOR_JWKS_URI:${CASDOOR_ISSUER_URI:https://id.hugmesh.net}/.well-known/jwks}}
+     * (d681155, the localhost-issuer fix). In multi-issuer mode the shared
+     * {@code TenancyResourceServerConfig.decoderForIssuer} validates the issuer EQUAL to
+     * {@code issuer-uri} through {@code NimbusReactiveJwtDecoder.withJwkSetUri(jwk-set-uri)}
+     * (discovery-free, by design) and every OTHER listed brand through OIDC discovery.
+     * A test that overrides only {@code issuer-uri} therefore sends the back-compat
+     * brand's key fetch to the real {@code https://id.hugmesh.net/.well-known/jwks}:
+     * wherever that name does not resolve the request fails closed with the WRONG status
+     * (500 {@code Could not obtain the keys} instead of 200/401/403), and wherever it
+     * does resolve the test silently depends on outbound DNS + HTTP. In production both
+     * properties derive from the same {@code CASDOOR_*} root, so the pair is coherent
+     * there; this helper makes the test context coherent the same way.
+     */
+    public static void registerAsBackCompatIssuer(DynamicPropertyRegistry registry, TestIssuer issuer) {
+        registry.add("spring.security.oauth2.resourceserver.jwt.issuer-uri", issuer::issuerUri);
+        registry.add("spring.security.oauth2.resourceserver.jwt.jwk-set-uri", issuer::jwkSetUri);
     }
 
     /**

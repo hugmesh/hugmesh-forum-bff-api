@@ -55,7 +55,8 @@ class ForumAdminCrossDomainHttpTest extends PostgresTestSupport {
         rogue = new TestIssuer();   // deliberately NOT in app.tenancy.issuers
         registry.add("app.tenancy.issuers",
                 () -> brandX.issuerUri() + "=brandx," + brandY.issuerUri() + "=brandy");
-        registry.add("spring.security.oauth2.resourceserver.jwt.issuer-uri", brandX::issuerUri);
+        // issuer-uri AND jwk-set-uri, both from brandX (hugmesh-forum-bff-api#19).
+        TestIssuer.registerAsBackCompatIssuer(registry, brandX);
     }
 
     @AfterAll

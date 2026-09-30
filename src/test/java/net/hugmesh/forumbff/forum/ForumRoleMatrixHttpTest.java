@@ -71,7 +71,10 @@ class ForumRoleMatrixHttpTest extends PostgresTestSupport {
         // 'other' only needs to contribute its URI to the registry CSV string; the
         // matrix never mints from it, so closing it immediately is fine (no token of
         // that issuer is ever validated).
-        registry.add("spring.security.oauth2.resourceserver.jwt.issuer-uri", issuer::issuerUri);
+        // issuer-uri AND jwk-set-uri, both from the minting issuer. Every token in this
+        // matrix is brandx's, i.e. the back-compat issuer, which the shared tenancy config
+        // validates through withJwkSetUri(jwk-set-uri) (hugmesh-forum-bff-api#19).
+        TestIssuer.registerAsBackCompatIssuer(registry, issuer);
     }
 
     @AfterAll

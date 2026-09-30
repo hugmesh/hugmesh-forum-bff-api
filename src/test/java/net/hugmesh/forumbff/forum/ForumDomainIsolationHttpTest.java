@@ -67,9 +67,11 @@ class ForumDomainIsolationHttpTest extends PostgresTestSupport {
         // swaps onto the per-issuer resolver; an unknown iss 401s, fail-closed).
         registry.add("app.tenancy.issuers",
                 () -> brandX.issuerUri() + "=brandx," + brandY.issuerUri() + "=brandy");
-        // Keep the lone back-compat issuer-uri pointed at brand-X (harmless; the
-        // multi-issuer resolver is what validates, discovery-style, per iss).
-        registry.add("spring.security.oauth2.resourceserver.jwt.issuer-uri", brandX::issuerUri);
+        // The lone back-compat issuer is brand-X. NOT harmless on its own: the shared
+        // TenancyResourceServerConfig validates the issuer equal to issuer-uri through
+        // withJwkSetUri(jwk-set-uri), not discovery, so jwk-set-uri must name brand-X's
+        // in-process JWKS too or every brand-X token fetches id.hugmesh.net (#19).
+        TestIssuer.registerAsBackCompatIssuer(registry, brandX);
     }
 
     @AfterAll
