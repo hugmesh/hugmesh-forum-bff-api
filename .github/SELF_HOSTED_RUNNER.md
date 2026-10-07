@@ -1,5 +1,12 @@
 # Runbook — register the self-hosted `hugmesh-x86` GitHub Actions runner
 
+> **Update 2026-10-07: `release.yml` no longer needs this runner.** It now runs on a
+> GitHub-hosted runner and resolves the private `net.hugmesh` libraries from GitHub Packages
+> (`.github/maven-ci-settings.xml`, secret `PACKAGES_READ_TOKEN`), so the tailnet reachability
+> argument in section 1 no longer applies to it, and GitHub-hosted jobs start again. This
+> runbook still describes the `hugmesh-x86` runner for any workflow that still targets it
+> (for example `ci.yml`, where present).
+
 **Status: NOT DONE. This is the operator-held half of the work.** An agent cannot
 create a runner. Until someone follows this runbook on a real host, every GitHub
 Actions workflow in `hugmesh-forum-bff-api`, `hugmesh-wiki-bff-api` and
