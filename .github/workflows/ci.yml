@@ -1,73 +1,29 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# GitHub-side COMPILE + TEST + SCA workflow.
+# GitHub-side COMPILE + TEST + SCA workflow (pull_request and push to main).
 #
-# READ THIS FIRST — NOTHING IN THIS FILE HAS EVER EXECUTED. Measured 2026-09-17
-# against github.com/hugmesh/hugmesh-forum-bff-api, via the REST API:
+# RUNNER. Both jobs read the repository variable RUNS_ON (a JSON array of labels,
+# e.g. ["self-hosted","Linux","X64"]) and fall back to github-hosted ubuntu-latest
+# when it is unset. They used to ask for the label `hugmesh-x86`, which no runner
+# carries, so every run queued until GitHub cancelled it ~24h later (all 25+ CI
+# runs, e.g. 36710243120, ended `cancelled` with an empty runner_name). That label
+# is retired; see .github/SELF_HOSTED_RUNNER.md.
 #
-#   * 25 of 25 `CI` runs since 2026-07-30 ended `cancelled`. Not one was ever
-#     assigned a runner — `runner_name` is empty and `steps` is empty on every
-#     job. Run 33946257559 queued at 2026-09-05T05:04:57Z and was cancelled at
-#     2026-09-06T05:04:57Z, exactly 24h later: GitHub's queue limit for a job no
-#     runner picks up. (Three shorter cancellations are `concurrency:` below
-#     superseding an older commit, not runs that did anything.)
-#   * GET /repos/hugmesh/hugmesh-forum-bff-api/actions/runners -> total_count 0.
-#     No self-hosted runner carrying the `hugmesh-x86` label is registered here.
-#   * github-HOSTED runners are not an escape hatch on this account: they die in
-#     3-5s with "The job was not started because recent account payments have
-#     failed or your spending limit needs to be increased" (reproduced the same
-#     day on hugmesh/hugmesh-generator run 35277167203, labels [ubuntu-latest]).
-#   * GET /repos/hugmesh/hugmesh-forum-bff-api/branches/main/protection -> 403
-#     "Upgrade to GitHub Pro or make this repository public to enable this
-#     feature". On the current plan a required status check on a PRIVATE repo
-#     cannot be configured AT ALL — so nothing here can be made merge-blocking
-#     by editing this file.
+# PRIVATE MAVEN DEPENDENCIES. hugmesh-parent / hugmesh-commons / hugmesh-build-config
+# are not on Maven Central. The build passes `-s .github/maven-ci-settings.xml`, which
+# adds the org's GitHub Packages registries (read credential: secrets.PACKAGES_READ_TOKEN
+# when set, otherwise the automatic GITHUB_TOKEN; see that file). `verify` binds PMD,
+# Checkstyle and SpotBugs, which load hugmesh-build-config off the plugin classpath, so
+# the file declares <pluginRepositories> as well as <repositories>. On a runner whose
+# ~/.m2 already holds the chain (installed locally) Maven resolves it from there and
+# never contacts the registry; that proves the build, not the registry route.
 #
-# An earlier version of this header asserted that this workflow "makes the
-# compile + test a REQUIRED, merge-blocking GitHub status check". It does not,
-# and it never did: every PR in this repo merged with this workflow contributing
-# nothing. That claim is corrected here rather than deleted, because a CI file
-# that overstates its own coverage is exactly how a gap survives a review — the
-# reader sees a plausible gate and stops looking. Tracked, with the API evidence,
-# on hugmesh/hugmesh-forum-bff-api#2.
+# The repo-root settings.xml (GitLab registry) is still what .gitlab-ci.yml uses.
 #
-# WHY THIS FILE EXISTS ANYWAY
-# Merges happen on GitHub (`gh pr merge`), but the test pipeline runs on the
-# in-cluster GitLab PULL MIRROR (.gitlab-ci.yml) — and GitHub never waits for
-# GitLab. So a PR can merge onto a BROKEN main and GitLab only fails afterwards.
-# That is exactly how forum-bff main went non-compiling once (a static-analysis
-# cleanup dropped a `ClientResponse` import; the build failed only post-merge on
-# GitLab; PR #34 fixed it). This workflow is the intended remedy, waiting on the
-# PREREQS below to become real.
-#
-# RUNNER — must be SELF-HOSTED in-cluster (tailnet).
-# The private deps (hugmesh-parent / hugmesh-commons) live ONLY in the in-cluster
-# GitLab group Maven registry, which a github.com-hosted runner cannot reach
-# (Tailscale-only). So this runs on a self-hosted runner registered to the
-# repo/org that sits on the tailnet and has Docker — for the Testcontainers
-# full-context tests in `build`, and for the Dependency-Check image in `sca` —
-# the same host class as the GitLab `hugmesh-x86` runner. (ALTERNATIVE if you
-# prefer github-hosted runners: publish hugmesh-parent + hugmesh-commons to
-# GitHub Packages and point settings.xml at it with GITHUB_TOKEN — a bigger
-# change to those two repos + every consumer's settings.xml — and it still needs
-# the billing block above lifted.)
-#
-# PREREQS (one-time; ALL FOUR are operator-held — none can be set from a PR):
-#   1. Register a self-hosted runner (labels: self-hosted, hugmesh-x86) on the
-#      tailnet with Docker available (mirrors the GitLab privileged shell
-#      runner). Until this exists, both jobs below queue for 24h and are
-#      cancelled, which is the measured status quo.
-#   2. Add repo/org SECRETS that map to the settings.xml ${env.*} placeholders:
-#        GITLAB_MAVEN_TOKEN  -> a read-scoped token for the GitLab group Maven registry
-#        GITLAB_API_V4_URL   -> the in-cluster GitLab API v4 URL (e.g. https://gitlab.<tailnet>/api/v4)
-#        GITLAB_GROUP_ID     -> the HugMesh GitLab group id
-#      OPTIONAL: NVD_API_KEY -> speeds the Dependency-Check feed sync in `sca`
-#      (the scan runs without it, just slower on a cold cache).
-#   3. Lift the GitHub plan/billing block: private-repo branch protection needs
-#      GitHub Pro (or Team), and github-hosted minutes need the payment failure
-#      cleared. Either that, or make the repo public.
-#   4. THEN branch protection on `main`: require the "build" check before merge
-#      (Settings → Branches → Protect main → Require status checks → "build").
-#      `sca` is deliberately NOT a candidate for that list — see its comment.
+# MERGE GATE. Private-repo branch protection needs a paid plan or a public repo, so
+# nothing here is merge-blocking by itself; read the run before merging. `sca` is
+# deliberately non-blocking (`continue-on-error`, mirroring `allow_failure: true` on
+# GitLab's `pentest:sca`): the job can show success while the scan failed, so read the
+# "Report the SCA verdict" summary, not the job colour.
 # ─────────────────────────────────────────────────────────────────────────────
 name: CI
 
@@ -83,8 +39,8 @@ concurrency:
 
 jobs:
   build:
-    # Self-hosted, in-cluster (tailnet) — see the RUNNER note above. Has Docker for Testcontainers.
-    runs-on: [self-hosted, hugmesh-x86]
+    # See the RUNNER note above. Needs Docker for the Testcontainers full-context tests.
+    runs-on: ${{ fromJSON(vars.RUNS_ON || '["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@v4
 
@@ -99,8 +55,8 @@ jobs:
       # alone catches the broken-import class that slipped through before; `verify` also
       # runs the Testcontainers full-context tests against the host Docker daemon (Ryuk
       # disabled — the runner reaps its own short-lived containers, matching .gitlab-ci.yml).
-      # settings.xml resolves the private hugmesh-parent/commons from the GitLab group
-      # Maven registry via the secrets mapped to its ${env.*} placeholders (NO secret in git).
+      # .github/maven-ci-settings.xml resolves the private hugmesh-parent/commons/build-config
+      # from GitHub Packages via the UPSTREAM_PACKAGES_* env below (NO secret in git).
       # Pure-text cross-check of the constants the Makefile, this workflow, the
       # Dockerfile and .gitlab-ci.yml must agree on (JDK major, SCA CVSS gate).
       # Costs milliseconds and cannot flake; runs BEFORE the build so a drifted
@@ -112,12 +68,11 @@ jobs:
 
       - name: Build + test (merge gate)
         env:
-          CI_JOB_TOKEN: ${{ secrets.GITLAB_MAVEN_TOKEN }}
-          CI_API_V4_URL: ${{ secrets.GITLAB_API_V4_URL }}
-          GITLAB_GROUP_ID: ${{ secrets.GITLAB_GROUP_ID }}
+          UPSTREAM_PACKAGES_ACTOR: ${{ secrets.PACKAGES_READ_ACTOR || github.actor }}
+          UPSTREAM_PACKAGES_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN || secrets.GITHUB_TOKEN }}
           TESTCONTAINERS_RYUK_DISABLED: "true"
           MAVEN_OPTS: "-Dapi.version=1.43"
-        run: ./mvnw -B -s settings.xml clean verify
+        run: ./mvnw -B -s .github/maven-ci-settings.xml clean verify
 
   # ---------------------------------------------------------------------------
   # sca — OWASP Dependency-Check, the GitHub-side port of `.gitlab-ci.yml`'s
@@ -167,7 +122,7 @@ jobs:
     name: sca (OWASP Dependency-Check, non-blocking)
     needs: [build]
     continue-on-error: true
-    runs-on: [self-hosted, hugmesh-x86]
+    runs-on: ${{ fromJSON(vars.RUNS_ON || '["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@v4
 

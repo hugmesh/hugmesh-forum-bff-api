@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  CI/CONTAINER-BUILD Maven settings for resolving the private net.hugmesh chain from the
+  hugmesh org's GitHub Packages Maven registries. Passed explicitly with
+  `-s .github/maven-ci-settings.xml` by .github/workflows/ci.yml and, through the
+  Dockerfile's MAVEN_SETTINGS build-arg, by .github/workflows/release.yml. Nothing else
+  uses it; the repo-root settings.xml (GitLab registry) is unchanged and still serves
+  the GitLab pipeline and the local compose lane.
+
+  This repo needs three links of the chain: hugmesh-build-config (0.5.0), hugmesh-parent
+  (2.8.0, the <parent>) and hugmesh-commons (2.1.0, a dependency plus its tests jar).
+  It publishes no Maven artifact, so there is no deploy <server> here.
+
+  WHY A SETTINGS FILE AND NOT <repositories> IN pom.xml
+  maven.pkg.github.com requires authentication even to READ. A repository entry in the
+  pom would make every unauthenticated build fail (a developer's ./mvnw verify, the
+  hugmesh-generator m2-bootstrap lane). A parent POM also cannot be resolved from a
+  repository declared inside that same pom. `-s` is the only shape that adds the
+  repositories for CI alone.
+
+  BOTH <repositories> AND <pluginRepositories>
+  hugmesh-parent lists hugmesh-build-config under the maven-pmd / maven-checkstyle /
+  spotbugs plugins' own <dependencies>, so each analyser reads its ruleset off the plugin
+  classpath. Maven resolves a plugin's dependencies from the PLUGIN repositories, so
+  declaring the URL only under <repositories> resolves the parent and then dies at
+  `verify` (where those plugins are bound) on the ruleset jar.
+
+  ONE <server> PER REPOSITORY ID
+  GitHub Packages is per repository (there is no org-wide Maven endpoint), and a <server>
+  id must equal the repository id for Maven to attach credentials.
+
+  THE CREDENTIAL
+  The automatic GITHUB_TOKEN is scoped to the repository whose workflow runs. It cannot
+  read another repository's package unless that package lists this repository under
+  "Manage Actions access". So the read credential is its own pair of variables, injected
+  by the workflow:
+      UPSTREAM_PACKAGES_ACTOR  ${{ secrets.PACKAGES_READ_ACTOR || github.actor }}
+      UPSTREAM_PACKAGES_TOKEN  ${{ secrets.PACKAGES_READ_TOKEN || secrets.GITHUB_TOKEN }}
+  (a read:packages PAT when the secret exists, otherwise the automatic token, which
+  works once the access grant exists). No secret is committed here.
+
+  ON A MACHINE THAT ALREADY HAS THE CHAIN
+  Maven consults the local repository first. A runner whose ~/.m2 already holds the three
+  artifacts (installed locally, e.g. by hugmesh-generator tests/stack/m2-bootstrap.sh)
+  never touches these remotes for them, so the build passes without the registry. That
+  proves the build, not the registry route; release.yml's preflight is what proves the
+  registry route.
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 http://maven.apache.org/xsd/settings-1.0.0.xsd">
+
+  <servers>
+    <server>
+      <id>github-hugmesh-build-config</id>
+      <username>${env.UPSTREAM_PACKAGES_ACTOR}</username>
+      <password>${env.UPSTREAM_PACKAGES_TOKEN}</password>
+    </server>
+    <server>
+      <id>github-hugmesh-parent</id>
+      <username>${env.UPSTREAM_PACKAGES_ACTOR}</username>
+      <password>${env.UPSTREAM_PACKAGES_TOKEN}</password>
+    </server>
+    <server>
+      <id>github-hugmesh-commons</id>
+      <username>${env.UPSTREAM_PACKAGES_ACTOR}</username>
+      <password>${env.UPSTREAM_PACKAGES_TOKEN}</password>
+    </server>
+  </servers>
+
+  <profiles>
+    <profile>
+      <id>github-hugmesh-packages</id>
+
+      <repositories>
+        <repository>
+          <id>github-hugmesh-build-config</id>
+          <url>https://maven.pkg.github.com/hugmesh/hugmesh-build-config</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </repository>
+        <repository>
+          <id>github-hugmesh-parent</id>
+          <url>https://maven.pkg.github.com/hugmesh/hugmesh-parent</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </repository>
+        <repository>
+          <id>github-hugmesh-commons</id>
+          <url>https://maven.pkg.github.com/hugmesh/hugmesh-commons</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </repository>
+      </repositories>
+
+      <pluginRepositories>
+        <pluginRepository>
+          <id>github-hugmesh-build-config</id>
+          <url>https://maven.pkg.github.com/hugmesh/hugmesh-build-config</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </pluginRepository>
+        <pluginRepository>
+          <id>github-hugmesh-parent</id>
+          <url>https://maven.pkg.github.com/hugmesh/hugmesh-parent</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </pluginRepository>
+        <pluginRepository>
+          <id>github-hugmesh-commons</id>
+          <url>https://maven.pkg.github.com/hugmesh/hugmesh-commons</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </pluginRepository>
+      </pluginRepositories>
+    </profile>
+  </profiles>
+
+  <activeProfiles>
+    <activeProfile>github-hugmesh-packages</activeProfile>
+  </activeProfiles>
+</settings>
