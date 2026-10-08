@@ -2,8 +2,10 @@
 
 The Forum Backend-for-Frontend (BFF) for the [HugMesh](https://github.com/hugmesh)
 platform. It wraps a **headless phpBB** install and is the **only** path any client
-has to phpBB. There is no direct browser route, no gateway route into phpBB, and no
-other service that calls it. phpBB sees no browser. It sees this service. The BFF is
+has to phpBB. There is no direct browser route and no gateway route into phpBB. No
+other service calls it in code, though the cluster's network policy also admits the
+admin BFF and a sync Job (see [Where it fits](#where-it-fits-in-hugmesh)). phpBB sees
+no browser. It sees this service. The BFF is
 paired 1:1 with [`hugmesh-forum-ui`](https://github.com/hugmesh/hugmesh-forum-ui),
 the Angular native-federation remote served at the apex path `/social/forum`.
 
@@ -47,8 +49,8 @@ chain. Each BFF owns one product surface. This repo is the BFF for **forums**:
 
 - **Tier:** a per-surface BFF behind
   [`hugmesh-gateway`](https://github.com/hugmesh/hugmesh-gateway). It is the
-  **only** caller of the headless phpBB extension. No other service and no browser
-  talks to phpBB directly.
+  **only** code path to the headless phpBB extension. No browser talks to phpBB
+  directly, and admin actions go through this BFF.
 - **Runtime datastore:** a small Postgres database with three tables: a forum/role
   binding cache, an audit trail, and a VN presentation-profile table (see
   [Database schema](#database-schema)). All runtime access goes through R2DBC.
@@ -56,7 +58,11 @@ chain. Each BFF owns one product surface. This repo is the BFF for **forums**:
 - **Upstream:** the phpBB install and the
   [`hugmesh-forum-api`](https://github.com/hugmesh/hugmesh-forum-api) extension
   run in their own default-deny Kubernetes namespace, apart from this BFF's database
-  namespace. phpBB has no gateway route. This BFF is its sole upstream caller.
+  namespace. phpBB has no gateway route. This BFF is its only caller in code. The
+  generator's default-deny network policy admits ingress to phpBB from three pods:
+  this BFF, `hugmesh-admin-bff-api` (allowed so a future direct admin path stays
+  inside the boundary; admin actions traverse this BFF today) and the
+  `forum-admin-sync` Job (`manifests/forum/network-policy.yaml`).
 - **Identity:** a Casdoor JWT OAuth2 resource server. `issuer-uri` defaults to
   `https://id.hugmesh.net` (override with `CASDOOR_ISSUER_URI`).
 - **Sibling repos:** the paired UI is
@@ -96,9 +102,9 @@ flowchart LR
     Ext -->|DI-injected phpBB services| Phpbb[(phpBB 3.3<br/>hugmesh-forum namespace)]
 ```
 
-Two callers reach this service: the gateway and the admin BFF. Only this service
-calls the phpBB extension, and only the extension calls phpBB. The chain has one path
-at every hop.
+Two callers reach this service: the gateway and the admin BFF. In code, only this
+service calls the phpBB extension, and only the extension calls phpBB. The chain has
+one path at every hop.
 
 ## The single browser → phpBB path
 
@@ -758,7 +764,7 @@ unless marked ✅.
   the token after a real WebAuthn/TOTP ceremony before the flag can be turned on.
 - 🚧 **External notification channels.** A phpBB forum adapter is one of the planned
   external delivery channels (alongside chat DM/feed channels and email) for an in-app
-  notifications feature. This BFF is the sole caller of phpBB, so a future "post a
+  notifications feature. This BFF is phpBB's only code-level caller, so a future "post a
   system notification to the forum" endpoint may land here. No such endpoint exists
   yet.
 
