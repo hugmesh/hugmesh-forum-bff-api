@@ -12,22 +12,28 @@ The tests are deterministic — **no network access and no live Casdoor** are
 required: each brand's JWKS and OIDC discovery document is served by a tiny
 in-process JDK `HttpServer` bound to `127.0.0.1`, so
 `ReactiveJwtDecoders.fromIssuerLocation(...)` validates real RSA-signed tokens
-entirely offline.
+entirely offline. The slice tests need no Docker. The full-context test
+(`MultiIssuer401FailClosedSpringBootTest`) extends the commons `PostgresTestSupport`,
+so it starts a Testcontainers Postgres and needs Docker.
 
 ## Shared test infrastructure
 
 - `src/test/java/net/hugmesh/forumbff/testsupport/TestIssuer.java` — mints
-  issuer-specific RS256 JWTs against an in-process JWKS. Shared verbatim across the
-  BFF family (only the package declaration differs per repo). Its only dependency
-  is `nimbus-jose-jwt`, pulled in transitively via
-  `spring-boot-starter-oauth2-resource-server`.
+  issuer-specific RS256 JWTs against an in-process JWKS. Copied from the gateway
+  reference seam; only the package declaration changed, plus one forum-bff addition:
+  `jwkSetUri()` and `registerAsBackCompatIssuer(...)` (see the full-context test
+  below). The discovery document is served at `/.well-known/openid-configuration` and
+  the JWK set at `/.well-known/jwks.json`. Its only dependency is `nimbus-jose-jwt`,
+  pulled in transitively via `spring-boot-starter-oauth2-resource-server`.
 - `src/test/java/net/hugmesh/forumbff/config/SecuritySliceSupport.java` —
   builds this repo's real `SecurityConfig` filter chain into a `WebTestClient`,
   without booting a full Spring Boot context. It's adapted to this repo's
-  `SecurityConfig(DomainRegistry, ObjectProvider<...>)` constructor shape and its
-  profile-split filter chain beans: `devFilterChain` (`@Profile({"dev","test"})`,
-  spec public) reached via `sliceClient(...)`, and `filterChain`
-  (`@Profile("!dev & !test")`, spec ADMIN-gated) reached via `prodSliceClient(...)`.
+  `SecurityConfig(DomainRegistry, ObjectProvider<...>, boolean mfaEnabled, long
+  mfaFreshnessWindowMillis)` constructor shape and its profile-split filter chain
+  beans: `devFilterChain` (`@Profile({"dev","test"})`, spec public) reached via
+  `sliceClient(...)`, and `filterChain` (`@Profile("!dev & !test")`, spec
+  ADMIN-gated) reached via `prodSliceClient(...)`. `mfaSliceClient(...)` and
+  `mfaProdSliceClient(...)` build the same two chains with `app.mfa.enabled=true`.
 
 ## The tests
 
@@ -44,7 +50,8 @@ entirely offline.
 
 A `@SpringBootTest(webEnvironment = RANDOM_PORT)` test that boots the whole
 application (`test` profile, real auto-configuration) with `app.tenancy.issuers`
-wired from two in-process `TestIssuer`s via `@DynamicPropertySource`. Unlike the
+wired from two in-process `TestIssuer`s via `@DynamicPropertySource`. A third,
+unlisted `TestIssuer` plays the foreign issuer. Unlike the
 slice tests above — which build `SecurityConfig`/`TenancyResourceServerConfig` by
 hand — this exercises the production wiring end to end: the
 `@ConditionalOnExpression` activation of the tenancy resolver bean, the
@@ -53,8 +60,12 @@ hand — this exercises the production wiring end to end: the
 `resolver != null && domainRegistry.isMultiIssuer()`. An assertion pins that the
 multi-issuer path was actually taken in the booted context, so the fail-closed
 behaviour below is genuinely the resolver's own. The backward-compatible
-single-issuer `issuer-uri` property is pointed at brand X so Spring Boot's
-auto-configured decoder can discover it offline and the context boots.
+single-issuer `issuer-uri` and `jwk-set-uri` properties are both pointed at brand X
+(`TestIssuer.registerAsBackCompatIssuer`). `TenancyResourceServerConfig` validates the
+issuer equal to `issuer-uri` through `jwk-set-uri` and every other listed brand
+through OIDC discovery. With only `issuer-uri` overridden, `jwk-set-uri` stays at
+`application.yml`'s `https://id.hugmesh.net/.well-known/jwks` default and brand-X
+tokens fail with a 500 off-host (issue #19).
 
 | # | Scenario | Expectation |
 |---|----------|-------------|
@@ -82,13 +93,19 @@ happens).
 - on the production chain, `/v3/api-docs` requires ADMIN (plain user 403,
   unauthenticated 401).
 
+`MfaStepUpPathGateSliceTest` covers the same gates with `app.mfa.enabled` on and off:
+with the flag off, an admin with no stamp is still allowed; with it on, the admin and
+moderation paths answer 403 without a fresh `MFA_SATISFIED` marker (a refusal that
+carries the `X-Step-Up-Required` header only when the marker leg denied) and the
+ordinary `/bff/forum/**` floor is not step-up gated.
+
 ## The missing ADMIN>MOD edge is enforced at the method level, not the path level
 
 The load-bearing "MOD AND FORUM" moderation rule is enforced at the **method**
 level (`@PreAuthorize("hasRole('ADMIN') or (hasRole('MOD') and hasRole('FORUM'))")`
 in `ModerationController`), not in `authorizeExchange` — the coarse path policy
-only floors `/bff/forum/moderation/**` (under `/bff/forum/**`) to
-`.authenticated()`. So at the filter-chain layer, a bare authenticated token passes
+only floors `/bff/forum/moderation/**` to `.authenticated()` (plus the
+`MFA_SATISFIED` marker when `app.mfa.enabled` is on). So at the filter-chain layer, a bare authenticated token passes
 the moderation **path**; the 403 for a MOD-without-FORUM caller happens later, at
 the method gate (covered separately by `ModerationControllerTest`). The path-gate
 slice test asserts the coarse layer's actual decision *and* documents this
