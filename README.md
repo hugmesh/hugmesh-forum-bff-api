@@ -72,25 +72,26 @@ chain, where each BFF owns exactly one product surface. This repo is the BFF for
   [`hugmesh-generator`](https://github.com/hugmesh/hugmesh-generator).
 
 **Platform authentication, in brief.** Casdoor is the platform's SSO identity
-provider. [`hugmesh-login-ui`](https://github.com/hugmesh/hugmesh-login-ui) runs
-the Casdoor OIDC (PKCE) redirect, and
-[`hugmesh-user-bff-api`](https://github.com/hugmesh/hugmesh-user-bff-api) performs
-the server-side code→token exchange and holds per-session JWT custody — the browser
-only ever sees an opaque, `bff_`-prefixed session cookie and never the Casdoor JWT
-itself. At the edge, the gateway is a pure Casdoor-JWT OAuth2 resource server: a
-pre-security filter swaps the opaque session cookie for the internal JWT, so by the
-time a request reaches this BFF it already carries a validated Casdoor `Bearer` JWT,
-exactly as `casdoorAuthoritiesConverter` (below) expects. This BFF's contract is
-unaffected by how that session was established — it only ever validates the inbound
-JWT and applies its own role/domain gates.
+provider. The browser is never sent to Casdoor. The sign-in form in
+[`hugmesh-login-ui`](https://github.com/hugmesh/hugmesh-login-ui) posts to
+`POST /bff/login` on [`hugmesh-user-bff-api`](https://github.com/hugmesh/hugmesh-user-bff-api),
+which drives Casdoor's internal login and the PKCE code exchange server-side and
+sets an opaque, `bff_`-prefixed session cookie. The browser holds only that cookie
+and never sees a Casdoor JWT. At the edge, the gateway swaps the cookie for an
+internal custody JWT through an exchange call to `hugmesh-admin-bff-api`
+(`HUGMESH_GATEWAY_BFF_EXCHANGE_ENABLED` is `true` in the generator's
+`specs/cluster/apps/20-gateway-fe.yaml`). By the time a request reaches this BFF it
+carries a Casdoor `Bearer` JWT, as `casdoorAuthoritiesConverter` (below) expects.
+This BFF's contract does not depend on how the session was established: it
+validates the inbound JWT and applies its own role and domain gates.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    Browser -->|HTTPS + Casdoor JWT cookie| Gateway[fe-gateway<br/>bff-forum-prefix]
+    Browser -->|HTTPS + bff_ session cookie| Gateway[fe-gateway<br/>bff-forum-prefix]
     Gateway -->|Bearer JWT| BFF[hugmesh-forum-bff-api]
-    AdminBFF[hugmesh-admin-bff-api<br/>ForumAdminClient] -->|admin-console proxy<br/>Bearer JWT| BFF
+    AdminBFF[hugmesh-admin-bff-api<br/>PhpbbAdminClient] -->|admin-console proxy<br/>Bearer JWT| BFF
     BFF -->|R2DBC| DB[(forum-bff-db<br/>forum_user_role<br/>forum_action<br/>forum_vn_profile)]
     BFF -.->|Liquibase, JDBC only| DB
     BFF -->|HTTP + Bearer JWT + X-HugMesh-JWT<br/>gated by phpbb.enabled| Ext[hugmesh-forum-api extension<br/>Symfony routes on phpBB]
@@ -120,12 +121,12 @@ sequenceDiagram
     participant BFF as hugmesh-forum-bff-api
     participant PH as phpBB<br/>hugmesh-forum-api extension
 
-    B->>GW: HTTPS request + Casdoor JWT cookie
-    GW->>GW: verify JWT, check ROLE_FORUM floor<br/>(route-access table)
+    B->>GW: HTTPS request + bff_ session cookie
+    GW->>GW: swap cookie for JWT, check ROLE_FORUM floor<br/>(route-access table)
     GW->>BFF: forward request + JWT (Authorization: Bearer)
     BFF->>BFF: re-verify JWT, enforce role gate<br/>(@PreAuthorize, domain predicate)
     alt phpbb.enabled = true
-        BFF->>PH: HTTP + Bearer JWT + X-HugMesh-JWT<br/>(mTLS when SSL_ENABLED=true)
+        BFF->>PH: HTTP + Bearer JWT + X-HugMesh-JWT<br/>(mTLS when HUGMESH_MTLS_CLIENT_ENABLED=true)
         PH->>PH: re-verify JWT against Casdoor JWKS<br/>re-derive group authority from token
         PH-->>BFF: JSON response
     else phpbb.enabled = false (stub)
@@ -162,7 +163,8 @@ access decision is made at the method level via `@PreAuthorize`:
 - **ROLE_ADMIN** — full access to every surface, including the admin console, with
   no forum role required.
 - **ROLE_SUPERADMIN** — reaches every ADMIN-gated surface via the
-  `ROLE_SUPERADMIN > ROLE_ADMIN` hierarchy edge. The hierarchy is deliberately
+  `ROLE_SUPERADMIN > ROLE_ADMIN` hierarchy edge. The hierarchy holds three edges
+  (`SUPERADMIN > ADMIN`, `SUPERADMIN > MOD`, `SUPERADMIN > USER`) and is deliberately
   minimal: there is **no `ADMIN > MOD` edge**, so a plain ADMIN cannot satisfy the
   MOD-AND-FORUM moderation gate through the hierarchy. SUPERADMIN is additionally
   **unscoped** across domains (see [Multi-tenancy](#multi-tenancy-and-domain-scoping)).
@@ -186,8 +188,8 @@ flowchart TB
 ```
 
 Domain scoping (see [Multi-tenancy](#multi-tenancy-and-domain-scoping)) applies only
-to the `forum_user_role` cache and the `forum_action` audit trail — it is not part of
-this authorization decision, so no domain check gates moderation access.
+to the `forum_user_role` cache, the `forum_action` audit trail and the
+`forum_vn_profile` table — it is not part of this authorization decision, so no domain check gates moderation access.
 
 ### MFA step-up on the privileged paths
 
@@ -289,7 +291,7 @@ issuer URI (see [Multi-tenancy](#multi-tenancy-and-domain-scoping)).
 | `GET /topics/{id}` | get a topic + its replies |
 | `POST /topics/{id}/replies` | reply (acts as the caller) |
 | `PUT /posts/{id}` | edit a post (owner or ADMIN) |
-| `DELETE /posts/{id}` | delete a post |
+| `DELETE /posts/{id}` | delete a post (owner or ADMIN) |
 
 `VnProfileController` — `/bff/forum/vn-profiles` (**authenticated only, no
 ROLE_FORUM floor** — the "VN" reading mode renders other users' posts to any
@@ -297,9 +299,9 @@ logged-in reader, who may not hold the forum-author role):
 
 | Method + path | Purpose |
 |---|---|
-| `GET /me` | the caller's own visual-novel-style reading presentation profile. **Never 404s**: an absent row synthesizes `{stickerSlug:null, characterImgRef:null, voiceboxStyle:"classic", voiceboxAccent:null, voiceStyle:null}`. |
-| `PUT /me` | upsert the caller's profile → 200 with the saved profile. Subject is always taken from the JWT `sub` — a smuggled subject field in the body is silently dropped. Server-enforced validation: `voiceboxStyle` ∈ `classic\|glass\|retro\|neon\|paper`; `voiceboxAccent` `^#[0-9a-f]{6}$`; `stickerSlug` `^[a-z0-9_-]{1,64}$`; `voiceStyle` ∈ `warm\|bright\|deep\|soft\|robot` or null; `characterImgRef` a strict same-origin `/bff/user/...` path allowlist ≤256 chars (it's rendered as an `<img src>`, so it's re-checked defensively at the service layer too). The allowlist also refuses every spelling a URL parser would **rewrite** — `.`/`..` dot-segments and empty (`//`) segments — so a stored ref means exactly one wire path. On top of the shape, the owner-scoped self-avatar serve `/bff/user/profile/avatar/body` (`VnProfileDto.UNSTORABLE_IMG_REFS`) is **cleared to null**, not rejected. The legacy character-avatar handle path `/bff/user/character/avatar` is deliberately **kept** — see the owner-blind note below. |
-| `POST /lookup` | batch-resolve `{subjects:[...]}` (1–50, deduplicated server-side; empty or oversized → 400) → `{profiles:{"<subject>":{…}}}`. Subjects with no row are simply absent keys — never null, never a 404. This is the READER-facing projection — and the only one — so a stored owner-blind `characterImgRef` is suppressed here (the author's `stickerSlug` is left intact, so the reader falls back to their sticker). Suppression compares the **canonical** path, so a legacy row spelled `/bff/user/profile/avatar/./body` is caught too. |
+| `GET /me` | the caller's own visual-novel-style reading presentation profile. **Never 404s**: an absent row synthesizes `{subject:<the caller's sub>, stickerSlug:null, characterImgRef:null, voiceboxStyle:"classic", voiceboxAccent:null, voiceStyle:null}`. |
+| `PUT /me` | upsert the caller's profile → 200 with the saved profile. Subject is always taken from the JWT `sub` — a smuggled subject field in the body is silently dropped. Server-enforced validation: `voiceboxStyle` is required and ∈ `classic\|glass\|retro\|neon\|paper`; `voiceboxAccent` `^#[0-9a-f]{6}$`; `stickerSlug` `^[a-z0-9_-]{1,64}$`; `voiceStyle` ∈ `warm\|bright\|deep\|soft\|robot` or null; `characterImgRef` a strict same-origin `/bff/user/...` path allowlist ≤256 chars (it's rendered as an `<img src>`, so it's re-checked defensively at the service layer too). The allowlist also refuses every spelling a URL parser would **rewrite** — `.`/`..` dot-segments and empty (`//`) segments — so a stored ref means exactly one wire path. On top of the shape, the owner-scoped self-avatar serve `/bff/user/profile/avatar/body` (`VnProfileDto.UNSTORABLE_IMG_REFS`) is **cleared to null**, not rejected. The legacy character-avatar handle path `/bff/user/character/avatar` is deliberately **kept** — see the owner-blind note below. |
+| `POST /lookup` | batch-resolve `{subjects:[...]}` (1–50 entries of at most 255 characters each, deduplicated server-side; empty, oversized or blank → 400) → `{profiles:{"<subject>":{…}}}`. Subjects with no row are simply absent keys — never null, never a 404. This is the READER-facing projection — and the only one — so a stored owner-blind `characterImgRef` is suppressed here (the author's `stickerSlug` is left intact, so the reader falls back to their sticker). Suppression compares the **canonical** path, so a legacy row spelled `/bff/user/profile/avatar/./body` is caught too. |
 
 Rows live in `forum_vn_profile` and are domain-scoped the same way as
 `forum_user_role` (brand stamped server-side from the validated issuer; SUPERADMIN is
@@ -314,7 +316,7 @@ unscoped and it's never a request field). This is the contract that the paired
 | `POST /topics/{id}` | moderate a topic (hide/lock/delete — any post, not just your own) |
 
 `ForumAdminController` — `/bff/forum/admin` (ADMIN end-to-end; this is the surface
-`hugmesh-admin-bff-api`'s `ForumAdminClient` calls):
+`hugmesh-admin-bff-api`'s `PhpbbAdminClient` (package `adminbff.forum`) calls):
 
 | Method + path | Purpose |
 |---|---|
@@ -324,25 +326,30 @@ unscoped and it's never a request field). This is the contract that the paired
 | `POST /users/{subject}/ban` | ban a user. Makes a real phpBB call when `external.forum.enabled=true` (→ 200 `applied`); otherwise stubbed (→ 202 pending). Always audited. Accepts a `{reason}` JSON body or a legacy `?reason=` query param. |
 | `DELETE /users/{subject}/ban` | lift a ban (same gating and audit behaviour as above; fully reversible) |
 | `POST /users/{subject}/groups` | assign a user to a named phpBB group `{group}` (ADMIN only; group name validated against `ForumGroup` — unknown → 400; audited) |
-| `PUT /users/{subject}/groups` | sync phpBB group membership for a user from their current Casdoor roles (ADMIN only; computes the full target group set via `ForumService.syncGroups`, audited). Called by the admin BFF after a role change. |
+| `PUT /users/{subject}/groups` | sync phpBB group membership for a user (ADMIN only). The target group is read from the user's cached `forum_user_role.group_membership` row, or `NONE` if no row exists; `ForumService.syncGroups(auth, subject)` pushes it to the extension and audits it. Called by the admin BFF after a role change. |
 | `GET /categories` | list forum categories (read-through phpBB; empty while the seam is disabled) |
 | `POST /categories` | create a forum category `{name, description?, parentId?}` (ADMIN only; audited; 202 pending-reconcile while the seam is disabled) |
 | `GET /moderation-queue` | list the moderation queue (pending/flagged posts) |
 | `POST /moderation/{id}/approve` | approve a queued post (ADMIN only; audited) |
 | `POST /moderation/{id}/reject` | reject a queued post (ADMIN only; audited) |
-| `POST /styles` | install a phpBB style (ADMIN only) |
-| `POST /extensions` | install a phpBB extension (ADMIN only) |
-| `GET /audit` | read the `forum_action` audit trail |
+| `POST /styles` | install a phpBB style (ADMIN only; `{name}` JSON body or `?name=`, missing → 400) |
+| `POST /extensions` | install a phpBB extension (ADMIN only; same `{name}` body or `?name=`) |
+| `GET /audit` | read the `forum_action` audit trail, newest first. Optional `?limit=`, clamped server-side to 1–1000 (default 200). Scoped to the caller's brand; SUPERADMIN sees all brands. |
 
 The phpBB HTTP leg itself stays behind this BFF's own `phpbb.enabled` flag until the
 `hugmesh-forum-api` extension is deployed and validated on the target cluster — so
 the BFF-to-BFF seam above is real and tested even while no phpBB call is made yet
 (see [Headless phpBB integration](#headless-phpbb-integration)).
 
-Writes against a disabled extension seam return **`202 {state: pending}`**; admin
-ban/unban return **202 pending-reconcile** for any non-applied outcome and never a
-`200` for a ban that didn't actually take effect. `GET /actuator/health` (plus
-`/health/**` and `/info`) is public for container/orchestrator health probes. The
+With the extension seam disabled, topic, reply, edit and delete writes in
+`ForumController` return **`202 {state: pending}`**. Category create returns
+**`202 {state: pending-reconcile}`**, and admin ban/unban return **202
+pending-reconcile** for any non-applied outcome, never a `200` for a ban that didn't
+take effect. Style install, extension install, queued-post approve/reject and group
+assign/sync still return `200` and write an `ok` audit row when the seam is
+disabled, because the disabled client call completes empty. `GET /actuator/health`
+(plus `/actuator/health/**` and `/actuator/info`) is public for container and
+orchestrator health probes. The
 OpenAPI spec at `/v3/api-docs` (with Swagger UI) is the source the paired
 `hugmesh-forum-ui`'s typed client and docs pipeline consume; it's open under the
 `dev`/`test` profile and `ADMIN`/`SUPERADMIN`-gated in production.
@@ -369,9 +376,12 @@ phpBB 3.3.
 
 **Status:** the extension is proven to install, enable, migrate, and register its
 routes on phpBB 3.3.11 (controllers, service layer, an initial-schema migration, and
-a JWT/JWKS auth test suite all ship). End-to-end HTTP posting through a live,
-running phpBB instance is not yet proven in CI — the `docker compose` smoke test
-that exercises this BFF against a live phpBB is currently a manual step.
+a JWT/JWKS auth test suite all ship). Per the `hugmesh-forum-api` README ("Go-live
+status"), the full authenticated round-trip passed a `docker compose` smoke (30/30)
+on its earlier MySQL harness. On the cluster-shaped Postgres harness only the
+shallow checks (`/health` 200, `/stats` 401, board lockdown 403, restart-idempotent
+schema detection) have been re-confirmed. No test or CI job in this repo runs this
+BFF against a live phpBB.
 
 **Alternatives considered:**
 
@@ -413,12 +423,14 @@ traffic cleanly whether or not phpBB is reachable:
   (`@CircuitBreaker(name="phpbb-admin")`).
 
 Turning on either flag is a config-only change — no code change is required in this
-BFF. What remains before flipping them in a real deployment is cluster-side: build
-and roll out an official phpBB image with the extension installed (owned by
-[`hugmesh-generator`](https://github.com/hugmesh/hugmesh-generator)), bootstrap
-it in its namespace, then set `PHPBB_ENABLED=true` here and
-`external.forum.enabled=true` in the admin BFF pointing at the in-cluster phpBB
-service.
+BFF. Both default to `false` in `application.yml`, but the generator's cluster
+manifest (`specs/cluster/manifests/forum-bff-api/deployment.yaml:140,143,147`) sets
+`PHPBB_ENABLED`, `EXTERNAL_FORUM_ENABLED` and `HUGMESH_MTLS_CLIENT_ENABLED` to
+`true`, and the admin BFF's manifest sets its own `EXTERNAL_FORUM_ENABLED=true`
+(`manifests/admin-bff-api/deployment.yaml:405`). The phpBB side (namespace
+`hugmesh-forum`, default-deny network policy, the custom image
+`registry.hugmesh.net/hugmesh/hugmesh-phpbb:main`, and the `forum-admin-sync` Job)
+is owned by [`hugmesh-generator`](https://github.com/hugmesh/hugmesh-generator).
 
 ## Casdoor → phpBB group mapping
 
@@ -426,7 +438,7 @@ service.
 |---|---|
 | ROLE_SUPERADMIN or ROLE_ADMIN | **ADMINISTRATORS** — always, even without ROLE_FORUM |
 | ROLE_MOD and ROLE_FORUM | GLOBAL_MODERATORS |
-| ROLE_FORUM alone | REGISTERED USERS |
+| ROLE_FORUM alone | REGISTERED |
 | none of the above | no access |
 
 `ForumGroup.forRoles` checks `ROLE_SUPERADMIN` explicitly alongside `ROLE_ADMIN`
@@ -468,7 +480,7 @@ tenant isolation — queries are scoped to the caller's brand. The gateway/Casdo
 half of multi-tenancy lives in the gateway and the generator (see
 [Roadmap](#roadmap)).
 
-**Canonical converter (`security.CasdoorAuthorities`).** The JWT-to-authority
+**Canonical converter (`commons.security.CasdoorAuthorities`).** The JWT-to-authority
 mapping uses one shared converter (the same logic used by the gateway) so the
 single-issuer and multi-issuer paths emit identical authorities. The converter
 derives exactly one `DOMAIN_<x>` authority from the **validated** issuer via
@@ -483,15 +495,16 @@ deployment seeds one entry (`{that issuer → "default"}`), so every token recei
 fail-closed: an issuer it doesn't recognise resolves to `null`, and the request is
 rejected with a 401.
 
-**Opt-in multi-issuer mode (`TenancyResourceServerConfig`).** The multi-issuer path
-only activates when `app.tenancy.issuers` lists real `issuer=domain` pairs and
-`DomainRegistry.isMultiIssuer()` returns true. Otherwise the resource server stays
+**Opt-in multi-issuer mode (`commons.config.TenancyResourceServerConfig`).** The
+multi-issuer path only activates when `app.tenancy.issuers` lists real
+`issuer=domain` pairs (the bean is conditional on the value containing `=`) and
+`DomainRegistry.isMultiIssuer()` returns true (more than one registered issuer). Otherwise the resource server stays
 on the standard single-issuer path. When active, each trusted per-brand Casdoor
 instance validates its own tokens (unknown `iss` → 401), and each per-issuer manager
 uses the same canonical converter so `DOMAIN_<x>` is emitted consistently.
 
-**Per-query domain predicate (`security.DomainScope` + `PrincipalDomain`).** The two
-runtime tables that carry tenant data — `forum_user_role` and `forum_action` — each
+**Per-query domain predicate (`commons.tenancy.DomainScope` + `security.PrincipalDomain`).** The three
+runtime tables — `forum_user_role`, `forum_action` and `forum_vn_profile` — each
 have a `domain` column (`NOT NULL DEFAULT 'default'`). For each request, the service
 resolves the caller's domain server-side from the validated issuer via
 `PrincipalDomain.forScope`, then appends `AND domain = :domain` to every repository
@@ -530,8 +543,10 @@ security/tenancy code that used to exist separately across each BFF:
    the common reactive-BFF dependencies (WebFlux, Actuator, Security, OAuth2
    resource server, validation, R2DBC, Liquibase, JDBC, springdoc, the test stack)
    and manages the versions of `hugmesh-commons`, the AWS SDK BOM, resilience4j, and
-   springdoc. Only two repo-specific dependencies remain unmanaged in this POM (the
-   resilience4j artifacts).
+   springdoc. This POM itself declares only `hugmesh-commons` (plus its `tests`
+   classifier jar, whose version stays explicit at `2.1.0`) and the two resilience4j
+   artifacts (`resilience4j-spring-boot4`, `resilience4j-reactor`); the resilience4j
+   versions come from the parent.
 
 2. **Shared security/tenancy/web** — `net.hugmesh:hugmesh-commons:2.1.0`. This
    service consumes the following commons classes in place of local copies:
@@ -570,19 +585,24 @@ security/tenancy code that used to exist separately across each BFF:
 
 ### Resolving the private `hugmesh-commons` artifact
 
-`hugmesh-commons` is not published to Maven Central — it lives in the
-organization's private GitLab Maven Package Registry. No credentials are ever
-committed to git in either resolution path below:
+`hugmesh-parent` and `hugmesh-commons` are not on Maven Central. No credentials are
+ever committed to git in any resolution path below:
 
 - **Local development:** install `hugmesh-parent` and `hugmesh-commons` into your
   local `~/.m2` repository with `mvn install`. After that, `./mvnw test` resolves
   both artifacts from the local cache.
-- **CI / Docker:** the committed [`settings.xml`](settings.xml) declares the
-  `gitlab-maven` group registry. Authentication uses a GitLab `CI_JOB_TOKEN`
-  (injected by the CI runner, never committed). The [`Dockerfile`](Dockerfile)
-  multi-stage build runs `./mvnw -s settings.xml package` with the token mounted as
-  a BuildKit secret (`--mount=type=secret`), so it's never baked into an image
-  layer.
+- **GitLab CI / Docker with the repo-root settings:** the committed
+  [`settings.xml`](settings.xml) declares the `gitlab-maven` group registry.
+  Authentication uses a GitLab `CI_JOB_TOKEN` (injected by the CI runner, never
+  committed). The [`Dockerfile`](Dockerfile) build runs `./mvnw -s settings.xml
+  package` with the token mounted as a BuildKit secret (`--mount=type=secret`), so it
+  is never baked into an image layer.
+- **GitHub release image:** `.github/workflows/release.yml` mounts the secret
+  `packages_read_token` (repository secret `PACKAGES_READ_TOKEN`, a classic PAT with
+  `read:packages`). The `Dockerfile` then builds with
+  [`.github/maven-ci-settings.xml`](.github/maven-ci-settings.xml), which resolves
+  `hugmesh-build-config`, `hugmesh-parent` and `hugmesh-commons` from GitHub
+  Packages. That file calls the GitLab group registry in `settings.xml` "retired".
 
 ## Database schema
 
@@ -611,7 +631,11 @@ cache (see [above](#resolving-the-private-hugmesh-commons-artifact)).
                                  # lighter security/HTTP slices use H2 in PG-compat mode.
 ./mvnw -B package                # build the jar
 ./mvnw -Pnative native:compile   # GraalVM native image (best-effort, needs a GraalVM host)
+make ci-parity                   # text-only check that the CI constants agree (scripts/ci-parity-guard.sh)
 ```
+
+The full-context and repository tests start a Testcontainers Postgres, so Docker
+must be running.
 
 The [`Dockerfile`](Dockerfile) is a two-stage Temurin 25 build
 (`package -DskipTests` → JRE runtime), exposing port 8080.
@@ -624,6 +648,7 @@ see [`application.yml`](src/main/resources/application.yml) for the full set.
 | Variable | Default | Purpose |
 |---|---|---|
 | `CASDOOR_ISSUER_URI` | `https://id.hugmesh.net` | Casdoor OIDC issuer used for JWT validation |
+| `CASDOOR_JWKS_URI` | `${CASDOOR_ISSUER_URI}/.well-known/jwks` | explicit JWKS URL, so the resource server does no OIDC discovery against the issuer (`iss` is still checked against `CASDOOR_ISSUER_URI`) |
 | `SPRING_R2DBC_URL` / `_USERNAME` / `_PASSWORD` | in-cluster Postgres DNS | runtime R2DBC datastore |
 | `SPRING_LIQUIBASE_URL` / `_USER` / `_PASSWORD` | same database, JDBC | Liquibase migration connection |
 | `PHPBB_ENABLED` | `false` | enables the real phpBB read/write HTTP seam (`PhpbbApiClient`) |
@@ -651,16 +676,17 @@ Notes on a few of these:
 
 ## CI/CD
 
-CI runs on both GitLab (the enforcing pipeline) and GitHub Actions (a merge-gate
-mirror), since GitHub is where pull requests are reviewed and merged while GitLab's
-CI runs on a mirrored copy after the merge.
+The repo carries two CI definitions, `.gitlab-ci.yml` and `.github/workflows/`.
+Pull requests are reviewed and merged on GitHub; GitLab's CI runs on a mirrored copy
+after the merge.
 
-`.gitlab-ci.yml` defines stages `[test, security, build, pentest]`:
+`.gitlab-ci.yml` defines stages `[test, security, build, pentest]` (the `security`
+stage has no job):
 
 | Stage / job | What it does | Gate |
 |---|---|---|
-| `test` | `./mvnw verify -B` in a Temurin 25 container; publishes JUnit reports | blocks `build:image` |
-| `build:image` | two-stage Temurin 25 image build, tagged with the release tag/git SHA and a moving branch tag, pushed to the registry | runs only after `test` passes |
+| `test` | runs `scripts/ci-parity-guard.sh`, then `./mvnw verify -B -s settings.xml` in a Temurin 25 container (runner tags `hugmesh-x86`, `privileged`), then fails if the build rewrote a committed file (`git diff --exit-code`); publishes JUnit reports | blocks `build:image` |
+| `build:image` | Docker build with BuildKit, tagged with the release tag or short git SHA plus a moving branch-slug tag, pushed to the GitLab registry; default branch and tags only | runs only after `test` passes |
 | `pentest:sca` | OWASP Dependency-Check SCA over this repo, via a shared job template from `hugmesh-generator` | advisory (`allow_failure`) |
 | `pentest:dast` | authenticated OWASP ZAP baseline DAST plus custom probes, via a shared job template from `hugmesh-generator` | advisory (`allow_failure`) |
 
@@ -668,16 +694,31 @@ The pen-test jobs extend a centralized template included from
 [`hugmesh-generator`](https://github.com/hugmesh/hugmesh-generator)
 (`tests/pentest/ci/pentest-stage.gitlab-ci.yml`), so SCA/DAST configuration has one
 source of truth across the platform's repos. `make pentest` (`pentest-sca` /
-`pentest-dast`) mirrors these jobs locally as a dev-only convenience — CI remains
-the actual enforcing path.
+`pentest-dast`) mirrors these jobs locally as a dev-only convenience, and
+`make ci-parity` checks that the constants shared by `Makefile`, `.gitlab-ci.yml` and
+`.github/workflows/ci.yml` still agree. CI remains the actual enforcing path.
 
-**GitHub Actions** (`.github/workflows/ci.yml`) runs a `build` job
-(`./mvnw -B -s settings.xml clean verify`) on pull requests and pushes to `main`,
-as a required, merge-blocking status check. It exists because merges happen on
-GitHub while GitLab's CI only runs post-merge on the mirror — without a GitHub-side
-check, a broken `main` could merge before GitLab's pipeline ever ran against it.
-GitLab CI remains the fuller enforcing pipeline (it runs the
-`security`/`build`/`pentest` stages that GitHub Actions does not).
+**GitHub Actions.** `.github/workflows/ci.yml` runs on pull requests and pushes to
+`main`, with `runs-on: [self-hosted, hugmesh-x86]`:
+
+- `build`: JDK 25, `scripts/ci-parity-guard.sh`, then `./mvnw -B -s settings.xml
+  clean verify`.
+- `sca`: OWASP Dependency-Check in the `owasp/dependency-check` image (fails at CVSS
+  7), non-blocking (`continue-on-error: true`).
+
+It is **not a merge gate today.** `GET /repos/hugmesh/hugmesh-forum-bff-api/actions/runners`
+returns `total_count: 0`, so no runner carries the `hugmesh-x86` label and the runs
+sit queued until GitHub cancels them after 24 hours. Branch protection also returns
+HTTP 403 ("Upgrade to GitHub Pro or make this repository public"), so no check can be
+made required on the current plan. `.github/SELF_HOSTED_RUNNER.md` is the runbook for
+registering the runner. GitLab CI is the fuller pipeline: it also builds the image on
+merge and runs DAST, which GitHub Actions does not.
+
+`.github/workflows/release.yml` is a manual (`workflow_dispatch`) job on
+`ubuntu-latest`. It checks that `PACKAGES_READ_TOKEN` can read `hugmesh-build-config`,
+`hugmesh-parent` and `hugmesh-commons` on GitHub Packages, then builds and pushes
+`ghcr.io/hugmesh/hugmesh-forum-bff-api` tagged with the first 12 characters of the
+commit SHA (plus `latest` on `main`).
 
 ## Roadmap
 
@@ -685,16 +726,17 @@ Status legend: ✅ shipped on `main` · 🚧 in-flight (open branch/PR) · 🔭 
 (design only) · ⛓ owned by another repo. Nothing below is implemented in this BFF
 unless explicitly marked ✅.
 
-**Config-only flips (work already done in code, deployment pending):**
+**Config-only flips (work already done in code):**
 
-- 🔭 **phpBB seam enable.** The phpBB read/write seam (`PhpbbApiClient`,
+- ✅⛓ **phpBB seam enable.** The phpBB read/write seam (`PhpbbApiClient`,
   `phpbb.enabled`) and the ban-congruence seam (`PhpbbAdminClient`,
   `external.forum.enabled`) are both feature-complete and gated purely by
   configuration. The [`hugmesh-forum-api`](https://github.com/hugmesh/hugmesh-forum-api)
-  extension itself is built and proven to install/enable/migrate/route on phpBB
-  3.3. What remains is cluster-side: building the phpBB image with the extension
-  baked in, namespace bootstrap, and on-cluster validation (owned by
-  `hugmesh-generator`, see below) — then flipping the two flags.
+  extension is built and proven to install/enable/migrate/route on phpBB 3.3. The
+  generator's manifest already sets both flags to `true` (see
+  [Feature flags](#feature-flags-phpbbenabled--externalforumenabled)). What is not
+  proven is the full authenticated round-trip on a cluster-shaped Postgres harness
+  and on a live cluster.
 
 **Owned by other repos in the platform:**
 
@@ -713,9 +755,10 @@ unless explicitly marked ✅.
 
 **Platform features that will eventually reach this BFF:**
 
-- 🚧 **Platform-wide SSO.** The Casdoor OIDC login → opaque session → gateway
+- 🚧 **Platform-wide SSO.** The Casdoor login → opaque session → gateway
   token-exchange flow (owned by `hugmesh-login-ui` / `hugmesh-user-bff-api` /
-  `hugmesh-gateway`) is being finished end-to-end with cross-service tests. This is
+  `hugmesh-admin-bff-api` / `hugmesh-gateway`) is being finished end-to-end with
+  cross-service tests. This is
   invisible to the forum BFF — its contract ("validate the inbound Casdoor Bearer
   JWT") is unchanged, and no code change is expected here beyond participating in
   the shared security test suite.
@@ -742,19 +785,22 @@ unless explicitly marked ✅.
 The code has no `FIXME`s or unimplemented-method stubs; the gaps below are
 configuration-gated seams and proof-coverage gaps, not incomplete implementations.
 
-- **`phpbb.enabled` and `external.forum.enabled` both default to `false`.** Until
-  they're flipped, `PhpbbApiClient` reads return typed empty/degraded responses,
-  writes are no-ops, and `PhpbbAdminClient.doSuspend()` stays stubbed (`202
-  pending-reconcile`, no real HTTP call). See
+- **`phpbb.enabled` and `external.forum.enabled` both default to `false`.** With the
+  defaults, `PhpbbApiClient` reads return typed empty/degraded responses, writes are
+  no-ops, and `PhpbbAdminClient.doSuspend()` stays stubbed (`202 pending-reconcile`,
+  no real HTTP call). The generator's cluster manifest overrides both to `true`. See
   [Headless phpBB integration](#headless-phpbb-integration).
-- **End-to-end HTTP posting through a live phpBB is not yet proven in CI.** The
-  `hugmesh-forum-api` extension is proven to install/enable/migrate/route on phpBB
-  3.3.11, but the `docker compose` smoke test that exercises this BFF against a
-  running phpBB instance is currently a manual step.
-- **GitHub Actions only runs `mvnw verify`.** It doesn't run the
-  `security`/`build`/`pentest` stages that `.gitlab-ci.yml` runs post-merge, so a
-  pull request can pass its required GitHub check while GitLab's SCA/DAST/image
-  stages could still fail after merge.
+- **End-to-end HTTP posting through a live phpBB is not proven by anything in this
+  repo.** The `hugmesh-forum-api` extension is proven to install/enable/migrate/route
+  on phpBB 3.3.11, but no test or CI job here runs this BFF against a running phpBB
+  instance.
+- **The GitHub CI workflow runs nowhere.** `ci.yml` targets the `hugmesh-x86` runner
+  label, no such runner is registered, and branch protection cannot be set on the
+  current plan (see [CI/CD](#cicd)). Nothing blocks a merge automatically.
+- **Disabled-seam writes that still answer `200`.** With the seam off, style and
+  extension install, queued-post approve/reject and group assign/sync return `200`
+  and write an `ok` audit row although nothing reached phpBB (see
+  [API surface](#api-surface)).
 - ✅ **The `characterImgRef` VN-profile field's resolvable target (issue #3) — all
   three halves are on `main`.** This BFF still only validates the *shape* of the path
   it is given (a strict same-origin `/bff/user/...` charset that additionally refuses
@@ -824,8 +870,8 @@ configuration-gated seams and proof-coverage gaps, not incomplete implementation
 
 Issues and pull requests are welcome. A few notes to make review faster:
 
-- Run `./mvnw test` locally before opening a PR — the GitHub Actions check
-  (`clean verify`) is a required, merge-blocking status.
+- Run `./mvnw test` locally before opening a PR — no CI check blocks a merge (see
+  [CI/CD](#cicd)).
 - Keep the security-slice tests (`SecuritySliceSupport`,
   `MultiIssuerSecuritySliceTest`, etc. — see
   [`docs/testing/MULTI-ISSUER-SLICE.md`](docs/testing/MULTI-ISSUER-SLICE.md)) green
