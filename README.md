@@ -62,7 +62,7 @@ chain. Each BFF owns one product surface. This repo is the BFF for **forums**:
   generator's default-deny network policy admits ingress to phpBB from three pods:
   this BFF, `hugmesh-admin-bff-api` (allowed so a future direct admin path stays
   inside the boundary; admin actions traverse this BFF today) and the
-  `forum-admin-sync` Job (`manifests/forum/network-policy.yaml`).
+  `forum-admin-sync` Job (`specs/cluster/manifests/forum/network-policy.yaml`).
 - **Identity:** a Casdoor JWT OAuth2 resource server. `issuer-uri` defaults to
   `https://id.hugmesh.net` (override with `CASDOOR_ISSUER_URI`).
 - **Sibling repos:** the paired UI is
@@ -422,10 +422,10 @@ traffic whether or not phpBB is reachable:
 
 Turning on either flag is a config-only change. This BFF needs no code change. Both
 default to `false` in `application.yml`, but the generator's cluster manifest
-(`specs/cluster/manifests/forum-bff-api/deployment.yaml:140,143,147`) sets
+(`specs/cluster/manifests/forum-bff-api/deployment.yaml`) sets
 `PHPBB_ENABLED`, `EXTERNAL_FORUM_ENABLED` and `HUGMESH_MTLS_CLIENT_ENABLED` to `true`,
 and the admin BFF's manifest sets its own `EXTERNAL_FORUM_ENABLED=true`
-(`manifests/admin-bff-api/deployment.yaml:405`). The phpBB side (namespace
+(`specs/cluster/manifests/admin-bff-api/deployment.yaml`). The phpBB side (namespace
 `hugmesh-forum`, default-deny network policy, the custom image
 `registry.hugmesh.net/hugmesh/hugmesh-phpbb:main`, and the `forum-admin-sync` Job) is
 owned by [`hugmesh-generator`](https://github.com/hugmesh/hugmesh-generator).
