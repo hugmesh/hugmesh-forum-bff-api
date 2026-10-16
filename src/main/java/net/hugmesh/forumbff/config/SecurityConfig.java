@@ -153,6 +153,13 @@ public class SecurityConfig {
     private void commonRoutes(ServerHttpSecurity.AuthorizeExchangeSpec ex) {
         // Probes are public so k8s/Docker healthchecks need no token.
         ex.pathMatchers("/actuator/health", "/actuator/health/**", "/actuator/info").permitAll();
+        // EVERY other actuator path is an operator surface (env, beans, heapdump, metrics,
+        // loggers, prometheus ...). Today the exposure list (health,info) leaves nothing
+        // behind it, but an env override or a new starter widens that list with no code
+        // change, and the anyExchange().authenticated() floor below would then hand it to
+        // any logged-in ROLE_USER. Decide it here, first-match-wins, so it fails CLOSED
+        // whatever is exposed. Explicit hasAnyRole, not the hierarchy edge.
+        ex.pathMatchers("/actuator/**").hasAnyRole("ADMIN", "SUPERADMIN");
         // The admin-console seam — ADMIN (or the cross-domain SUPERADMIN super-role)
         // end-to-end (declared BEFORE the floor so the more-specific prefix matches
         // first). Admins reach it via the converter's ROLE_ADMIN with no ROLE_FORUM
