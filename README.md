@@ -14,7 +14,7 @@ event loop) + R2DBC for runtime data access. JDBC is used **only** for Liquibase
 migrations. Casdoor JWT OAuth2 resource server, springdoc-openapi (webflux-ui),
 resilience4j circuit breakers, Spring-Native-ready, Java 25, Spring Boot 4.0.7.
 
-Maven artifact: `forum-bff` version `0.2.0` (package `net.hugmesh.forumbff`). The
+Maven artifact: `forum-bff` version `0.2.0-beta.1` (package `net.hugmesh.forumbff`). The
 `-api` suffix appears only in the repo, service and image name, not the artifact ID.
 
 > **Status legend used throughout this README:** ✅ shipped on `main` · 🚧 in-flight
@@ -531,7 +531,7 @@ Regression coverage for the fail-closed multi-issuer security slice (unknown iss
 This service builds on the org's shared Maven artifacts. They replace security and
 tenancy code that each BFF used to carry its own copy of:
 
-1. **Parent POM** — `net.hugmesh:hugmesh-parent:2.8.0`, itself a child of
+1. **Parent POM** — `net.hugmesh:hugmesh-parent:2.9.0-beta.1`, itself a child of
    `spring-boot-starter-parent:4.0.7`. The full Spring Boot dependency and plugin
    management tree is inherited transitively, along with the Testcontainers BOM,
    H2/R2DBC-H2 pins and the Liquibase starter. The parent also provides the common
@@ -539,11 +539,11 @@ tenancy code that each BFF used to carry its own copy of:
    validation, R2DBC, Liquibase, JDBC, springdoc, the test stack) and manages the
    versions of `hugmesh-commons`, the AWS SDK BOM, resilience4j, and springdoc. This
    POM itself declares only `hugmesh-commons` (plus its `tests` classifier jar, whose
-   version stays explicit at `2.1.0`) and the two resilience4j artifacts
+   version stays explicit at `2.2.0-beta.1`) and the two resilience4j artifacts
    (`resilience4j-spring-boot4`, `resilience4j-reactor`); the resilience4j versions
    come from the parent.
 
-2. **Shared security/tenancy/web** — `net.hugmesh:hugmesh-commons:2.1.0`. This
+2. **Shared security/tenancy/web** — `net.hugmesh:hugmesh-commons:2.2.0-beta.1`. This
    service uses these commons classes in place of local copies:
 
    | Local usage | Commons class |
@@ -690,26 +690,47 @@ checks that the constants shared by `Makefile`, `.gitlab-ci.yml` and
 `.github/workflows/ci.yml` still agree. CI remains the enforcing path.
 
 **GitHub Actions.** `.github/workflows/ci.yml` runs on pull requests and pushes to
-`main`, with `runs-on: [self-hosted, hugmesh-x86]`:
+`main`, on GitHub-hosted `ubuntu-latest` (never a self-hosted runner: these jobs run
+on pull requests, and a fork's pull request runs the fork's copy of the file):
 
-- `build`: JDK 25, `scripts/ci-parity-guard.sh`, then `./mvnw -B -s settings.xml
-  clean verify`.
+- `build`: JDK 25, `scripts/ci-parity-guard.sh`, `scripts/test-release-version.sh`,
+  then `./mvnw -B clean verify` with `.github/maven-ci-settings.xml` (GitHub Packages)
+  when the `PACKAGES_READ_TOKEN` secret reaches the run, otherwise with the GitLab
+  `settings.xml`, which a hosted runner cannot reach.
 - `sca`: OWASP Dependency-Check in the `owasp/dependency-check` image (fails at CVSS
   7), non-blocking (`continue-on-error: true`).
 
-It is **not a merge gate today.** `GET /repos/hugmesh/hugmesh-forum-bff-api/actions/runners`
-returns `total_count: 0`, so no runner carries the `hugmesh-x86` label, and the runs
-sit queued until GitHub cancels them after 24 hours. Branch protection also returns
-HTTP 403 ("Upgrade to GitHub Pro or make this repository public"), so no check can be
-made required on the current plan. `.github/SELF_HOSTED_RUNNER.md` is the runbook for
-registering the runner. GitLab CI is the fuller pipeline: it also builds the image on
-merge and runs DAST, which GitHub Actions does not.
+It is **not a merge gate today.** Until 2026-10-21 it asked for a `hugmesh-x86`
+self-hosted runner that was never registered, so every run sat queued until GitHub
+cancelled it after 24 hours. Hosted runners failed on billing while the repository was
+private. Branch protection returns HTTP 403 ("Upgrade to GitHub Pro or make this
+repository public"), so no check can be made required on the current plan. GitLab CI
+is the fuller pipeline: it also builds the image on merge and runs DAST, which GitHub
+Actions does not.
 
-`.github/workflows/release.yml` is a manual (`workflow_dispatch`) job on
-`ubuntu-latest`. It checks that `PACKAGES_READ_TOKEN` can read `hugmesh-build-config`,
-`hugmesh-parent` and `hugmesh-commons` on GitHub Packages, then builds and pushes
-`ghcr.io/hugmesh/hugmesh-forum-bff-api` tagged with the first 12 characters of the
-commit SHA (plus `latest` on `main`).
+`.github/workflows/release.yml` publishes `ghcr.io/hugmesh/hugmesh-forum-bff-api`. Its
+first job, `scripts/release-version.sh`, reads the version from `pom.xml` and decides
+what may be pushed:
+
+| Trigger | Image tags | GitHub Release |
+|---|---|---|
+| push to `main`, or a manual run on `main` | `main`, `sha-<12>` | none |
+| push of tag `v<version>`, or a manual run on that tag | `<version>`, `beta` (for a `-beta.N`), `sha-<12>` | prerelease, not latest |
+| anything else | refused | none |
+
+The tag must equal `v` + the `pom.xml` version, a `-SNAPSHOT` is refused, and a
+version that already exists in GHCR is never overwritten. `latest` moves only for a
+final (non-prerelease) version, and none exists yet. Each job runs on the runner list
+in the repository variable `RUNS_ON_PUBLISH` (for example the local self-hosted runner)
+only for `main` and `v*` tags; otherwise, or when that variable is unset, it runs on
+`ubuntu-latest`. Before building, it checks that `PACKAGES_READ_TOKEN` can read
+`hugmesh-build-config`, `hugmesh-parent` and `hugmesh-commons` on GitHub Packages.
+
+**Versions.** The package is in beta: `pom.xml` is `0.2.0-beta.1`. Each new published
+beta of the same base raises the `-beta.N` number. To publish one, merge the version
+change, then push an annotated tag `v<version>` on that `main` commit. The pinned
+`hugmesh-parent 2.9.0-beta.1` and `hugmesh-commons 2.2.0-beta.1` must be published
+first.
 
 ## Roadmap
 
@@ -782,9 +803,10 @@ configuration-gated seams and proof-coverage gaps, not unfinished code.
   `hugmesh-forum-api` extension is proven to install, enable, migrate and route on
   phpBB 3.3.11, but no test or CI job here runs this BFF against a running phpBB
   instance.
-- **The GitHub CI workflow runs nowhere.** `ci.yml` targets the `hugmesh-x86` runner
-  label, no such runner is registered, and branch protection cannot be set on the
-  current plan (see [CI/CD](#cicd)). Nothing blocks a merge automatically.
+- **The GitHub CI workflow has never run green.** Until 2026-10-21 `ci.yml` targeted a
+  `hugmesh-x86` runner that was never registered; it now runs on hosted runners, which
+  failed on billing while the repository was private. Branch protection cannot be set
+  on the current plan (see [CI/CD](#cicd)). Nothing blocks a merge automatically.
 - **Disabled-seam writes that still answer `200`.** With the seam off, style and
   extension install, queued-post approve/reject and group assign/sync return `200`
   and write an `ok` audit row although nothing reached phpBB (see

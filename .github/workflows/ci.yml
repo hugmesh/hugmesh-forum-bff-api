@@ -39,17 +39,26 @@
 # GitLab; PR #34 fixed it). This workflow is the intended remedy, waiting on the
 # PREREQS below to become real.
 #
-# RUNNER — must be SELF-HOSTED in-cluster (tailnet).
-# The private deps (hugmesh-parent / hugmesh-commons) live ONLY in the in-cluster
-# GitLab group Maven registry, which a github.com-hosted runner cannot reach
-# (Tailscale-only). So this runs on a self-hosted runner registered to the
-# repo/org that sits on the tailnet and has Docker — for the Testcontainers
-# full-context tests in `build`, and for the Dependency-Check image in `sca` —
-# the same host class as the GitLab `hugmesh-x86` runner. (ALTERNATIVE if you
-# prefer github-hosted runners: publish hugmesh-parent + hugmesh-commons to
-# GitHub Packages and point settings.xml at it with GITHUB_TOKEN — a bigger
-# change to those two repos + every consumer's settings.xml — and it still needs
-# the billing block above lifted.)
+# RUNNER — GitHub-hosted `ubuntu-latest`, written literally (changed 2026-10-21).
+# Both jobs run on `pull_request`, and the org is going public: a self-hosted
+# runner must never take pull-request jobs, because a fork's PR runs the fork's
+# own copy of this file. So this workflow never reads `vars.RUNS_ON` and never
+# names a self-hosted label. Publishing (release.yml) is the only workflow that
+# may use the local runner, and only for main, v* tags and manual dispatch.
+# Hosted runners have Docker (Testcontainers in `build`, the Dependency-Check
+# image in `sca`), but no route to the tailnet GitLab registry. So `build` reads
+# the net.hugmesh libraries from GitHub Packages through
+# .github/maven-ci-settings.xml whenever the PACKAGES_READ_TOKEN secret reaches
+# the run (pushes to main and same-repo PRs; release.yml uses the same file).
+# Without that secret (a fork PR, or the secret unset) it falls back to the
+# GitLab settings.xml below and fails to resolve the parent POM: a fork PR
+# cannot run `build` green on GitHub, and that is expected.
+#
+# HISTORICAL (before 2026-10-21): this file asked for `[self-hosted,
+# hugmesh-x86]` so it could reach the GitLab registry over the tailnet. No
+# runner ever carried that label, so every run queued for 24h and was
+# cancelled, as measured above. The PREREQS below describe that old plan;
+# items 1 and 2 no longer apply to these jobs.
 #
 # PREREQS (one-time; ALL FOUR are operator-held — none can be set from a PR):
 #   1. Register a self-hosted runner (labels: self-hosted, hugmesh-x86) on the
@@ -147,14 +156,30 @@ jobs:
       - name: CI parity guard (constants must not drift)
         run: bash scripts/ci-parity-guard.sh
 
+      # The release.yml version guard (which ref may publish which image tags) is plain
+      # bash; its tests cost milliseconds and need no network.
+      - name: Release version guard tests
+        run: bash scripts/test-release-version.sh
+
+      # Settings selection mirrors the Dockerfile: GitHub Packages when the read token is
+      # present, otherwise the legacy GitLab settings.xml (which a hosted runner cannot reach).
       - name: Build + test (merge gate)
         env:
           CI_JOB_TOKEN: ${{ secrets.GITLAB_MAVEN_TOKEN }}
           CI_API_V4_URL: ${{ secrets.GITLAB_API_V4_URL }}
           GITLAB_GROUP_ID: ${{ secrets.GITLAB_GROUP_ID }}
+          UPSTREAM_PACKAGES_ACTOR: ${{ secrets.PACKAGES_READ_ACTOR || github.actor }}
+          UPSTREAM_PACKAGES_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN }}
           TESTCONTAINERS_RYUK_DISABLED: "true"
           MAVEN_OPTS: "-Dapi.version=1.43"
-        run: ./mvnw -B -s settings.xml clean verify
+        run: |
+          set -euo pipefail
+          settings=settings.xml
+          if [ -n "${UPSTREAM_PACKAGES_TOKEN}" ]; then
+            settings=.github/maven-ci-settings.xml
+          fi
+          echo "maven settings: ${settings}"
+          ./mvnw -B -s "${settings}" clean verify
 
   # ---------------------------------------------------------------------------
   # sca — OWASP Dependency-Check, the GitHub-side port of `.gitlab-ci.yml`'s
@@ -196,9 +221,10 @@ jobs:
   #     (`--format SARIF`) and uploaded only as a plain build artifact; the
   #     findings do not surface in a code-scanning view. Tracked on issue #2.
   # The one intentional deviation: `--user $(id -u):$(id -g)`. GitLab runs this
-  # image as its own user inside a job container it then throws away; here the
-  # container writes into a PERSISTENT self-hosted runner workspace, and a
-  # root-owned reports/ or .nvd-cache/ would break the next actions/checkout.
+  # image as its own user inside a job container it then throws away; this was
+  # written for a PERSISTENT self-hosted runner workspace, where a root-owned
+  # reports/ or .nvd-cache/ would break the next actions/checkout. It is kept on
+  # the hosted runner too: harmless there, and the upload step can read the files.
   # ---------------------------------------------------------------------------
   sca:
     name: sca (OWASP Dependency-Check, non-blocking)
