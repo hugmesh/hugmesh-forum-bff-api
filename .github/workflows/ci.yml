@@ -77,6 +77,30 @@
 #   4. THEN branch protection on `main`: require the "build" check before merge
 #      (Settings → Branches → Protect main → Require status checks → "build").
 #      `sca` is deliberately NOT a candidate for that list — see its comment.
+#
+# PUBLIC-REPO SAFETY (added 2026-10-21, before the org goes public)
+# On a PUBLIC repo anyone can open a pull request from a fork, and the
+# `pull_request` trigger below then runs that fork's code (its pom.xml, its
+# tests, its scripts). On a self-hosted runner that is a stranger's code running
+# on our host, with its network reach. So both jobs below pick their runner with
+# an expression: a pull request whose head repository is not this repository goes
+# to a GitHub-hosted runner, where its first step fails on purpose and nothing
+# from the fork is checked out. Pushes to main and pull requests from branches
+# inside this repository still use the self-hosted runner as before.
+#
+# THIS IS NOT THE SECURITY BOUNDARY, only a second layer. For `pull_request`
+# GitHub reads the workflow file from the pull request itself, so a fork can edit
+# this file and point `runs-on` straight at the self-hosted label. What actually
+# keeps fork code off the host is organisation settings, which no file here can
+# set:
+#   * the runner group that holds the self-hosted runners must NOT allow public
+#     repositories (`allows_public_repositories: false`; measured false on the
+#     org's only group, "Default", on 2026-10-21), and
+#   * "Approval for running fork pull request workflows from contributors" must be
+#     "Require approval for all external contributors" (measured on 2026-10-21 as
+#     first-time contributors only).
+# Keep both. If the runner group is ever opened to public repositories so this
+# workflow can run, the second setting is the only thing left in front of it.
 # ─────────────────────────────────────────────────────────────────────────────
 name: CI
 
@@ -92,9 +116,22 @@ concurrency:
 
 jobs:
   build:
-    # GitHub-hosted, never self-hosted: this job runs on pull_request (see the RUNNER note above).
-    runs-on: ubuntu-latest
+    # Self-hosted, in-cluster (tailnet) — see the RUNNER note above. Has Docker for Testcontainers.
+    # Fork pull requests are routed to a GitHub-hosted runner instead and fail in
+    # their first step (PUBLIC-REPO SAFETY in the header).
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","hugmesh-x86"]') }}
     steps:
+      # FORK PULL REQUESTS STOP HERE, RED. See "PUBLIC-REPO SAFETY" in the header.
+      # This job was routed to a GitHub-hosted runner above, so nothing from the
+      # fork reaches the self-hosted host, and it fails on purpose instead of being
+      # skipped: a skipped job reports SUCCESS to a required status check, which
+      # would let a fork PR pass the merge gate having built nothing.
+      - name: Fork pull request, gate not run here (say WHY, never pass silently)
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "::error::This pull request comes from a fork. Its code is never run on the self-hosted runner, so this job did NOT build or test it and is red on purpose. A maintainer who has read the change can push the branch into hugmesh/hugmesh-forum-bff-api and open a pull request from there to run the gate."
+          exit 1
+
       - uses: actions/checkout@v4
 
       - name: Set up JDK 25 (matches the GitLab CI eclipse-temurin:25 image)
@@ -193,9 +230,23 @@ jobs:
     name: sca (OWASP Dependency-Check, non-blocking)
     needs: [build]
     continue-on-error: true
-    # GitHub-hosted, never self-hosted: this job runs on pull_request (see the RUNNER note above).
-    runs-on: ubuntu-latest
+    # Same routing as `build`: a fork pull request never lands on the self-hosted
+    # runner (PUBLIC-REPO SAFETY in the header). `needs: [build]` already skips this
+    # job when the fork step above fails; the routing is here so that removing
+    # `needs:` later cannot quietly put fork code on the host.
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","hugmesh-x86"]') }}
     steps:
+      # FORK PULL REQUESTS STOP HERE, RED. See "PUBLIC-REPO SAFETY" in the header.
+      # This job was routed to a GitHub-hosted runner above, so nothing from the
+      # fork reaches the self-hosted host, and it fails on purpose instead of being
+      # skipped: a skipped job reports SUCCESS to a required status check, which
+      # would let a fork PR pass the merge gate having built nothing.
+      - name: Fork pull request, gate not run here (say WHY, never pass silently)
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "::error::This pull request comes from a fork. Its code is never run on the self-hosted runner, so this job did NOT build or test it and is red on purpose. A maintainer who has read the change can push the branch into hugmesh/hugmesh-forum-bff-api and open a pull request from there to run the gate."
+          exit 1
+
       - uses: actions/checkout@v4
 
       # Say WHY the scan cannot run, and fail — never report success having
