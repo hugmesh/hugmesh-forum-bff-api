@@ -1,5 +1,5 @@
 # hugmesh-deploy.yaml — per-repo deploy descriptor (Phase 6 catalog). RENAMED from
-# the pre-rebrand `snapdragon-deploy.yaml` via `git mv`, so history follows. This
+# the pre-rebrand legacy filename via `git mv`, so history follows. This
 # was the LAST repo in the org still shipping the legacy spelling; the header above
 # has read `hugmesh-deploy.yaml` since an earlier content sweep, and only the
 # filename lagged.
@@ -9,7 +9,7 @@
 # stopped being true when the discovery hole was fixed: BOTH catalog generators
 # (hugmesh-generator specs/cluster/apps/13-service-catalog.yaml and
 # templates/apps/13d-brand-repos.yaml.hbs) now carry a `hugmesh-deploy.yaml` filter
-# entry alongside the LEGACY_COMPAT `snapdragon-deploy.yaml` one, and ArgoCD ORs
+# entry alongside the LEGACY_COMPAT legacy-filename one, and ArgoCD ORs
 # across `filters` entries — so this repo is matched under either spelling and stays
 # discoverable across the rename. Dropping the legacy entries is a separate,
 # deliberately operator-gated follow-up.

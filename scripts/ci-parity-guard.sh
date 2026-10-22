@@ -170,6 +170,59 @@ else
   note "generator template NOT reachable at ${PENTEST_STAGE_FILE}, so the CVSS number was checked only for INTERNAL consistency (${MK_CVSS:-?}). The authoritative value is .pentest-sca's SCA_FAIL_CVSS in hugmesh/hugmesh-generator; if it moves, nothing in THIS repo will go red. Set PENTEST_STAGE_FILE=<path> to close that gap in a pipeline that has both checkouts."
 fi
 
+# ── 4. Fork pull requests never reach the self-hosted runner ──────────────────
+# Once this repository is PUBLIC, anyone can open a pull request from a fork, and
+# a workflow triggered by `pull_request` runs that fork's code. On a self-hosted
+# runner that is a stranger's code on our host. Every workflow here that reacts
+# to pull requests must therefore pick, for every job, either a plain
+# GitHub-hosted label (ubuntu-*, windows-*, macos-*) or the fork-routing
+# expression used in .github/workflows/ci.yml, which sends a fork pull request to
+# a GitHub-hosted runner where it fails on purpose.
+#
+# Scope, said plainly: this stops US from re-adding the hole by accident. It does
+# not stop a fork, which can edit the workflow file inside its own pull request;
+# that boundary is the organisation's runner-group and fork-approval settings
+# (see "PUBLIC-REPO SAFETY" in ci.yml). Only single-line `runs-on:` values can be
+# read by a text guard, so any other shape fails here and asks to be rewritten.
+FORK_ROUTE='github.event.pull_request.head.repo.full_name != github.repository'
+WF_SEEN=0
+for wf in .github/workflows/*.yml .github/workflows/*.yaml; do
+  [ -f "${wf}" ] || continue
+  WF_SEEN=$((WF_SEEN + 1))
+  # Comment lines are dropped first: this repo's workflows carry long prose
+  # headers that mention pull_request and self-hosted runners in passing.
+  wf_code="$(grep -av '^[[:space:]]*#' "${wf}" || true)"
+  if ! printf '%s\n' "${wf_code}" | grep -aE '(^|[^A-Za-z_])pull_request(_target)?([^A-Za-z_]|$)' >/dev/null; then
+    continue
+  fi
+  runs_on_lines="$(printf '%s\n' "${wf_code}" | grep -anE '^[[:space:]]*runs-on:' || true)"
+  if [ -z "${runs_on_lines}" ]; then
+    fail "${wf} reacts to pull requests but has no single-line 'runs-on:' this guard can read."
+    continue
+  fi
+  wf_bad=0
+  while IFS= read -r line; do
+    value="${line#*runs-on:}"
+    value="$(printf '%s' "${value}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    case "${value}" in
+      *"${FORK_ROUTE}"*) ;;
+      ubuntu-*|windows-*|macos-*) ;;
+      '')
+        fail "${wf}: 'runs-on:' with its value on later lines cannot be checked by this guard. Write it on one line."
+        wf_bad=1 ;;
+      *)
+        fail "${wf} reacts to pull requests and has a job on '${value}' without the fork-routing expression. On a public repository a fork's pull request would run its code on that runner. Use the runs-on expression from .github/workflows/ci.yml."
+        wf_bad=1 ;;
+    esac
+  done <<< "${runs_on_lines}"
+  if [ "${wf_bad}" -eq 0 ]; then
+    ok "${wf}: every job that a pull request can start keeps fork pull requests off the self-hosted runner."
+  fi
+done
+if [ "${WF_SEEN}" -eq 0 ]; then
+  fail "no workflow files found under .github/workflows — this guard expected at least ${GH_CI}."
+fi
+
 printf '\n'
 if [ "${FAILURES}" -ne 0 ]; then
   printf 'ci-parity-guard: %d FAILURE(S), %d note(s). The CI surfaces disagree — fix them in one commit.\n' "${FAILURES}" "${NOTES}" >&2
