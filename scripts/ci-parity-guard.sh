@@ -170,14 +170,17 @@ else
   note "generator template NOT reachable at ${PENTEST_STAGE_FILE}, so the CVSS number was checked only for INTERNAL consistency (${MK_CVSS:-?}). The authoritative value is .pentest-sca's SCA_FAIL_CVSS in hugmesh/hugmesh-generator; if it moves, nothing in THIS repo will go red. Set PENTEST_STAGE_FILE=<path> to close that gap in a pipeline that has both checkouts."
 fi
 
-# ── 4. Fork pull requests never reach the self-hosted runner ──────────────────
+# ── 4. Pull request jobs never reach the self-hosted runner ───────────────────
 # Once this repository is PUBLIC, anyone can open a pull request from a fork, and
 # a workflow triggered by `pull_request` runs that fork's code. On a self-hosted
 # runner that is a stranger's code on our host. Every workflow here that reacts
-# to pull requests must therefore pick, for every job, either a plain
-# GitHub-hosted label (ubuntu-*, windows-*, macos-*) or the fork-routing
-# expression used in .github/workflows/ci.yml, which sends a fork pull request to
-# a GitHub-hosted runner where it fails on purpose.
+# to pull requests must therefore name, for every job, a plain GitHub-hosted
+# label (ubuntu-*, windows-*, macos-*), written literally on one line. An
+# expression is not accepted, not even one that routes fork pull requests to a
+# hosted runner and everything else to a self-hosted one: that still puts a
+# same-repository pull request's code on our host, which is the state this repo
+# was found in on 2026-10-29 (the ci.yml header said "ubuntu-latest, literal"
+# while both jobs still carried the routing expression).
 #
 # Scope, said plainly: this stops US from re-adding the hole by accident. It does
 # not stop a fork, which can edit the workflow file inside its own pull request;
@@ -186,13 +189,11 @@ fi
 # read by a text guard, so any other shape fails here and asks to be rewritten.
 #
 # Which triggers count. `pull_request` and `workflow_call` (a reusable workflow
-# runs with its caller's event) may use the fork-routing expression. A stranger
-# can also start `pull_request_target`, `pull_request_review`,
-# `pull_request_review_comment`, `issue_comment` and `workflow_run`, and for those
-# the expression does NOT help: it routes only when the event name is exactly
-# `pull_request`, so it would send them to the self-hosted runner. A workflow
-# naming any of them must use plain GitHub-hosted labels only.
-FORK_ROUTE='github.event.pull_request.head.repo.full_name != github.repository'
+# runs with its caller's event) count, and so do the other events a stranger can
+# start: `pull_request_target`, `pull_request_review`,
+# `pull_request_review_comment`, `issue_comment` and `workflow_run`. A workflow
+# whose `on:` block names none of them (release.yml: push, tags, manual dispatch)
+# may pick its runner by expression.
 PR_EVENTS_RE='(^|[^A-Za-z_])(pull_request|workflow_call)([^A-Za-z_]|$)'
 STRANGER_EVENTS_RE='(^|[^A-Za-z_])(pull_request_target|pull_request_review|pull_request_review_comment|issue_comment|workflow_run)([^A-Za-z_]|$)'
 WF_SEEN=0
@@ -202,10 +203,17 @@ for wf in .github/workflows/*.yml .github/workflows/*.yaml; do
   # Comment lines are dropped first: this repo's workflows carry long prose
   # headers that mention pull_request and self-hosted runners in passing.
   wf_code="$(grep -av '^[[:space:]]*#' "${wf}" || true)"
+  # Triggers are read from the top-level `on:` block ONLY. Matching the whole
+  # file made release.yml (push / tag / workflow_dispatch only) look like a
+  # pull_request_target workflow, because its publish-runner expression names
+  # that event to EXCLUDE it. A file with no readable `on:` block is checked in
+  # full, so an unusual layout is judged strictly, never skipped.
+  wf_on="$(printf '%s\n' "${wf_code}" | awk '/^("?on"?):/ {f=1; print; next} f && /^[^[:space:]]/ {f=0} f')"
+  [ -n "${wf_on}" ] || wf_on="${wf_code}"
   wf_stranger=0
-  if printf '%s\n' "${wf_code}" | grep -aE "${STRANGER_EVENTS_RE}" >/dev/null; then
+  if printf '%s\n' "${wf_on}" | grep -aE "${STRANGER_EVENTS_RE}" >/dev/null; then
     wf_stranger=1
-  elif ! printf '%s\n' "${wf_code}" | grep -aE "${PR_EVENTS_RE}" >/dev/null; then
+  elif ! printf '%s\n' "${wf_on}" | grep -aE "${PR_EVENTS_RE}" >/dev/null; then
     continue
   fi
   runs_on_lines="$(printf '%s\n' "${wf_code}" | grep -anE '^[[:space:]]*runs-on:' || true)"
@@ -219,11 +227,6 @@ for wf in .github/workflows/*.yml .github/workflows/*.yaml; do
     value="$(printf '%s' "${value}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
     case "${value}" in
       ubuntu-*|windows-*|macos-*) ;;
-      *"${FORK_ROUTE}"*)
-        if [ "${wf_stranger}" -eq 1 ]; then
-          fail "${wf} has a trigger a stranger can start other than plain pull_request (pull_request_target, pull_request_review, pull_request_review_comment, issue_comment or workflow_run). The fork-routing expression only routes event 'pull_request', so this job would still land on the self-hosted runner. Use a GitHub-hosted label such as ubuntu-latest."
-          wf_bad=1
-        fi ;;
       '')
         fail "${wf}: 'runs-on:' with its value on later lines cannot be checked by this guard. Write it on one line."
         wf_bad=1 ;;
@@ -231,13 +234,13 @@ for wf in .github/workflows/*.yml .github/workflows/*.yaml; do
         if [ "${wf_stranger}" -eq 1 ]; then
           fail "${wf} has a trigger a stranger can start (pull_request_target, pull_request_review, pull_request_review_comment, issue_comment or workflow_run) and a job on '${value}'. On a public repository that job would run on that runner. Use a GitHub-hosted label such as ubuntu-latest."
         else
-          fail "${wf} reacts to pull requests and has a job on '${value}' without the fork-routing expression. On a public repository a fork's pull request would run its code on that runner. Use the runs-on expression from .github/workflows/ci.yml."
+          fail "${wf} reacts to pull requests and has a job on '${value}'. On a public repository a pull request would run its code on that runner. Use a literal GitHub-hosted label such as ubuntu-latest."
         fi
         wf_bad=1 ;;
     esac
   done <<< "${runs_on_lines}"
   if [ "${wf_bad}" -eq 0 ]; then
-    ok "${wf}: every job that a pull request can start keeps fork pull requests off the self-hosted runner."
+    ok "${wf}: every job that a pull request can start runs only on GitHub-hosted runners."
   fi
 done
 if [ "${WF_SEEN}" -eq 0 ]; then
