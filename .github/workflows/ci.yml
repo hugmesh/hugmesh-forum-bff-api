@@ -145,6 +145,11 @@ jobs:
       - name: Release version guard tests
         run: bash scripts/test-release-version.sh
 
+      # release.yml's own signref check, overwrite guard, floating-tag re-check, digest check
+      # and GitHub Release flags, executed per channel with docker and gh stubbed. Stdlib only.
+      - name: Release workflow tests
+        run: python3 scripts/test-release-workflow.py
+
       # Settings selection mirrors the Dockerfile: GitHub Packages when the read token is
       # present, otherwise the legacy GitLab settings.xml (which a hosted runner cannot reach).
       - name: Build + test (merge gate)

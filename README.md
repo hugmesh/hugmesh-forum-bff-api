@@ -694,7 +694,7 @@ checks that the constants shared by `Makefile`, `.gitlab-ci.yml` and
 on pull requests, and a fork's pull request runs the fork's copy of the file):
 
 - `build`: JDK 25, `scripts/ci-parity-guard.sh`, `scripts/test-release-version.sh`,
-  then `./mvnw -B clean verify` with `.github/maven-ci-settings.xml` (GitHub Packages)
+  `scripts/test-release-workflow.py`, then `./mvnw -B clean verify` with `.github/maven-ci-settings.xml` (GitHub Packages)
   when the `PACKAGES_READ_TOKEN` secret reaches the run, otherwise with the GitLab
   `settings.xml`, which a hosted runner cannot reach.
 - `sca`: OWASP Dependency-Check in the `owasp/dependency-check` image (fails at CVSS
@@ -715,12 +715,16 @@ what may be pushed:
 | Trigger | Image tags | GitHub Release |
 |---|---|---|
 | push to `main`, or a manual run on `main` | `main`, `sha-<12>` | none |
-| push of tag `v<version>`, or a manual run on that tag | `<version>`, `beta` (for a `-beta.N`), `sha-<12>` | prerelease, not latest |
-| anything else | refused | none |
+| push to `release/X.Y`, or a manual run on it | `sha-<12>` | none |
+| tag `vX.Y.Z-beta.N` on a `main` commit (beta) | `X.Y.Z-beta.N`, `sha-<12>`, `beta` | prerelease, not latest |
+| tag `vX.Y.Z` on a `release/X.Y` commit (stable) | `X.Y.Z`, `sha-<12>`, `X.Y`, and `latest` only when X.Y is the newest stable line | full release, Latest only when `latest` moved |
+| any other tag (`-rc.N`, ...), or anything else | refused | none |
 
 The tag must equal `v` + the `pom.xml` version, a `-SNAPSHOT` is refused, and a
-version that already exists in GHCR is never overwritten. `latest` moves only for a
-final (non-prerelease) version, and none exists yet. Each job runs on the runner list
+version that already exists in GHCR is never overwritten: `X.Y.Z` and `X.Y.Z-beta.N`
+are immutable, while `beta`, `X.Y` and `latest` move. A patch on an older stable line
+moves its `X.Y` but never `latest`. Every pushed tag names the one signed, attested
+digest. Each job runs on the runner list
 in the repository variable `RUNS_ON_PUBLISH` (for example the local self-hosted runner)
 only for `main` and `v*` tags; otherwise, or when that variable is unset, it runs on
 `ubuntu-latest`. Before building, it checks that `PACKAGES_READ_TOKEN` can read
