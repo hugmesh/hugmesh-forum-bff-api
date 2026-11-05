@@ -27,7 +27,7 @@
   <!-- NO -api suffix in the artifactId (mirrors user-bff/admin-bff): -api is only in
        the repo/service/image name. -->
   <artifactId>forum-bff</artifactId>
-  <version>0.2.0-beta.1</version>
+  <version>0.4.0-beta.1</version>
   <name>hugmesh-forum-bff-api</name>
   <description>HugMesh forum BFF — Casdoor-aware reactive proxy in front of phpBB</description>
 
