@@ -12,6 +12,9 @@
     "name" : "ForumModeration",
     "description" : "MOD+FORUM (or ADMIN) moderation: hide/delete any post, lock threads, view the moderation queue. AND-of-MOD+FORUM (not hasAnyRole)."
   }, {
+    "name" : "ForumSystem",
+    "description" : "@system machine seam (admin-bff notifications): send a phpBB private message from the @system account. ROLE_SYSTEM only."
+  }, {
     "name" : "ForumAdmin",
     "description" : "ADMIN-only forum console seam (admin-bff calls this): ban/unban, group assign, stats, audit, style/extension install."
   }, {
@@ -450,6 +453,123 @@
           },
           "500" : {
             "description" : "Unexpected server error"
+          }
+        }
+      }
+    },
+    "/bff/forum/system/private-messages" : {
+      "post" : {
+        "tags" : [ "ForumSystem" ],
+        "summary" : "Send a phpBB private message from the @system account to the user mapped from a Casdoor subject (idempotent).",
+        "operationId" : "sendSystemPrivateMessage",
+        "parameters" : [ {
+          "name" : "Idempotency-Key",
+          "in" : "header",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/SystemPrivateMessage"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "description" : "Sent, or the same Idempotency-Key and body replayed: {\"id\": <phpBB msg_id>}",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "string"
+                }
+              }
+            }
+          },
+          "400" : {
+            "description" : "Missing/invalid Idempotency-Key or body",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "string"
+                }
+              }
+            }
+          },
+          "401" : {
+            "description" : "Unauthenticated",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "string"
+                }
+              }
+            }
+          },
+          "403" : {
+            "description" : "Caller lacks ROLE_SYSTEM (admin and superadmin included)",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "string"
+                }
+              }
+            }
+          },
+          "404" : {
+            "description" : "{\"code\":\"unknown_recipient\"}: the subject maps to no phpBB user",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "string"
+                }
+              }
+            }
+          },
+          "409" : {
+            "description" : "{\"code\":\"idempotency_in_progress\"}",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "string"
+                }
+              }
+            }
+          },
+          "422" : {
+            "description" : "{\"code\":\"idempotency_key_reused\"}: same key, different body",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "string"
+                }
+              }
+            }
+          },
+          "502" : {
+            "description" : "{\"code\":\"forum_upstream_error\"}: the extension failed or is missing the route",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "string"
+                }
+              }
+            }
+          },
+          "503" : {
+            "description" : "{\"code\":\"forum_unavailable\"}: phpbb.enabled=false",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "string"
+                }
+              }
+            }
           }
         }
       }
@@ -1454,6 +1574,27 @@
         "type" : "object",
         "properties" : {
           "body" : {
+            "maxLength" : 64000,
+            "minLength" : 0,
+            "type" : "string"
+          }
+        }
+      },
+      "SystemPrivateMessage" : {
+        "required" : [ "recipient" ],
+        "type" : "object",
+        "properties" : {
+          "recipient" : {
+            "maxLength" : 255,
+            "minLength" : 0,
+            "type" : "string"
+          },
+          "subject" : {
+            "maxLength" : 255,
+            "minLength" : 0,
+            "type" : "string"
+          },
+          "text" : {
             "maxLength" : 64000,
             "minLength" : 0,
             "type" : "string"
