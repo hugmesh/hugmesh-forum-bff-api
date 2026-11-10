@@ -23,8 +23,23 @@ public record BlockOutcome(String result) {
     public static final BlockOutcome STUBBED = new BlockOutcome("stubbed");
     public static final BlockOutcome OK = new BlockOutcome("ok");
 
+    /**
+     * Width of the {@code forum_action.outcome} column (changelog 002) that every outcome
+     * is written to. A longer value makes the audit INSERT fail, and the ban/unban then
+     * answers 500 with no audit row instead of 202 pending-reconcile.
+     */
+    public static final int MAX_RESULT_LENGTH = 64;
+
+    /**
+     * A failed external call. The reason should be short (an HTTP status or an exception
+     * class name); it is clamped to {@link #MAX_RESULT_LENGTH} so the outcome always fits
+     * the audit column.
+     */
     public static BlockOutcome degraded(String reason) {
-        return new BlockOutcome("degraded:" + reason);
+        String result = "degraded:" + reason;
+        return new BlockOutcome(result.length() > MAX_RESULT_LENGTH
+                ? result.substring(0, MAX_RESULT_LENGTH)
+                : result);
     }
 
     public boolean isStubbed() {

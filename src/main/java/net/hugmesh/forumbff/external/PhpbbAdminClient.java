@@ -4,6 +4,7 @@ import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Mono;
 
 import java.util.Map;
@@ -108,6 +109,22 @@ public class PhpbbAdminClient {
     }
 
     /**
+     * A short, column-safe degraded outcome for a failed extension call:
+     * {@code degraded:http-<status>} for an HTTP error answer, otherwise
+     * {@code degraded:<exception class>}. The full message is logged here instead.
+     * It used to be the outcome itself: a WebClient error message runs to ~100
+     * characters, which overflowed {@code forum_action.outcome} (varchar 64), so a ban
+     * phpBB refused answered 500 with no audit row instead of 202 pending-reconcile.
+     */
+    static BlockOutcome degradedFrom(String casdoorSubject, Throwable e) {
+        log.warn("[phpbb] admin call for {} failed: {}", forLog(casdoorSubject), forLog(String.valueOf(e.getMessage())));
+        if (e instanceof WebClientResponseException w) {
+            return BlockOutcome.degraded("http-" + w.getStatusCode().value());
+        }
+        return BlockOutcome.degraded(e.getClass().getSimpleName());
+    }
+
+    /**
      * The single external-call seam. When {@code external.forum.enabled=false} returns
      * {@link BlockOutcome#STUBBED} immediately without any HTTP call (safe default).
      * When enabled:
@@ -134,7 +151,7 @@ public class PhpbbAdminClient {
                     .retrieve()
                     .toBodilessEntity()
                     .thenReturn(BlockOutcome.OK)
-                    .onErrorResume(e -> Mono.just(BlockOutcome.degraded(e.getMessage())));
+                    .onErrorResume(e -> Mono.just(degradedFrom(casdoorSubject, e)));
         } else {
             // DELETE the ban — extension lifts phpBB ban + re-adds groups per current roles
             return http.delete()
@@ -142,7 +159,7 @@ public class PhpbbAdminClient {
                     .retrieve()
                     .toBodilessEntity()
                     .thenReturn(BlockOutcome.OK)
-                    .onErrorResume(e -> Mono.just(BlockOutcome.degraded(e.getMessage())));
+                    .onErrorResume(e -> Mono.just(degradedFrom(casdoorSubject, e)));
         }
     }
 }

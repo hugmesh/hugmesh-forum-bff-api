@@ -35,6 +35,15 @@
        versions are all inherited from hugmesh-parent. This BFF has no repo-specific
        version pins left. -->
 
+  <!-- Live phpBB smoke test (src/test/.../smoke/PhpbbLiveSmokeTest, JUnit tag
+       `phpbb-smoke`, hugmesh-forum-bff-api#1). It boots a real phpBB 3.3.11 image, so a
+       plain `./mvnw test` / `verify` EXCLUDES the tag; the `phpbb-smoke` profile below
+       runs ONLY that tag. CI runs it as its own job in .github/workflows/ci.yml and
+       .gitlab-ci.yml. -->
+  <properties>
+    <smoke.groups></smoke.groups>
+    <smoke.excludedGroups>phpbb-smoke</smoke.excludedGroups>
+  </properties>
   <dependencies>
     <!-- The shared, canonical HugMesh security/tenancy/config/web building blocks
          (Casdoor JWT authorities, issuer->domain DomainRegistry, the Roles/PrincipalDomain
@@ -105,6 +114,16 @@
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-maven-plugin</artifactId>
     </plugin>
+    <!-- Merges with the parent-managed surefire config (its bytebuddy argLine stays).
+         Selects the JUnit tags per the smoke.* properties above. -->
+    <plugin>
+      <groupId>org.apache.maven.plugins</groupId>
+      <artifactId>maven-surefire-plugin</artifactId>
+      <configuration>
+        <groups>${smoke.groups}</groups>
+        <excludedGroups>${smoke.excludedGroups}</excludedGroups>
+      </configuration>
+    </plugin>
     <!-- Binds the parent-managed spotbugs-maven-plugin config (offline, from the
          local repo cache) with a repo-local exclude filter: EI_EXPOSE_REP2 is a
          false positive on every constructor-injection site here (WebClient /
@@ -120,6 +139,14 @@
   </plugins></build>
 
   <profiles>
+    <!-- `./mvnw test -Pphpbb-smoke`: run ONLY the live phpBB smoke test (needs Docker). -->
+    <profile>
+      <id>phpbb-smoke</id>
+      <properties>
+        <smoke.groups>phpbb-smoke</smoke.groups>
+        <smoke.excludedGroups></smoke.excludedGroups>
+      </properties>
+    </profile>
     <!-- Native build: `./mvnw -Pnative native:compile` produces a GraalVM binary.
          The parent's native plugin management does the heavy lifting; this thin
          local profile mirrors user-bff so the same `-Pnative` invocation works. -->
