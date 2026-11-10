@@ -69,8 +69,11 @@
 #        GITLAB_MAVEN_TOKEN  -> a read-scoped token for the GitLab group Maven registry
 #        GITLAB_API_V4_URL   -> the in-cluster GitLab API v4 URL (e.g. https://gitlab.<tailnet>/api/v4)
 #        GITLAB_GROUP_ID     -> the HugMesh GitLab group id
-#      OPTIONAL: NVD_API_KEY -> speeds the Dependency-Check feed sync in `sca`
-#      (the scan runs without it, just slower on a cold cache).
+#      REQUIRED for `sca`: NVD_API_KEY (org secret, visibility all) -> the NVD API
+#      key OWASP Dependency-Check needs to download the NVD feed. Without it — or
+#      with an EMPTY stored value — the scan ends in exit 13; a NEW key fails the
+#      same way ("Invalid API Key") until the activation link in NVD's email is
+#      clicked. See hugmesh-generator docs/NVD-API-KEY.md.
 #   3. Lift the GitHub plan/billing block: private-repo branch protection needs
 #      GitHub Pro (or Team), and github-hosted minutes need the payment failure
 #      cleared. Either that, or make the repo public.
@@ -259,10 +262,31 @@ jobs:
           restore-keys: |
             nvd-cache-
 
+      # The NVD API key is REQUIRED in practice: keyless, NVD throttles the feed
+      # download and Dependency-Check dies with exit 13 and only "[ERROR] Unable to
+      # continue dependency-check analysis." in the log — which the summary below
+      # used to report as a CVSS finding. An org secret stored from an EMPTY stdin
+      # (`gh secret set` in a non-interactive shell) is indistinguishable from an
+      # unset one here, and both are caught by this step.
+      - name: Require the NVD_API_KEY org secret (say WHY, never a bare exit 13)
+        id: nvdkey
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: |
+          set -euo pipefail
+          key="$(printf '%s' "${NVD_API_KEY:-}" | tr -d '[:space:]')"
+          if [ -z "${key}" ]; then
+            echo "::error::NVD_API_KEY org secret is empty or unset — OWASP Dependency-Check needs an activated NVD API key (request: https://nvd.nist.gov/developers/request-an-api-key). See hugmesh-generator docs/NVD-API-KEY.md."
+            echo "missing=1" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "missing=0" >> "$GITHUB_OUTPUT"
+
       - name: OWASP Dependency-Check
         id: scan
         env:
-          # Optional. Absent, Dependency-Check still syncs the feed, just slower.
+          # REQUIRED (checked by the step above). Passed in a private property
+          # file (nvd.api.key=...), never on docker's argv.
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
           SCA_SCAN_DIR: "."
           SCA_PROJECT: hugmesh-forum-bff-api
@@ -270,15 +294,18 @@ jobs:
         run: |
           set -uo pipefail
           mkdir -p .nvd-cache reports/sca
-          NVD_ARGS=()
-          if [ -n "${NVD_API_KEY:-}" ]; then
-            NVD_ARGS=(--nvdApiKey "${NVD_API_KEY}")
-          fi
+          # 0600 property file under RUNNER_TEMP, outside the workspace (never an
+          # artifact); the container runs as this same uid (--user), so it can
+          # read it through the read-only mount.
+          props="$(mktemp "${RUNNER_TEMP:-/tmp}/nvd.XXXXXX")"
+          chmod 600 "${props}"
+          printf 'nvd.api.key=%s\n' "$(printf '%s' "${NVD_API_KEY}" | tr -d '[:space:]')" > "${props}"
           set +e
           docker run --rm \
             --user "$(id -u):$(id -g)" \
             -e HOME=/tmp \
             -v "${GITHUB_WORKSPACE}:/workspace" \
+            -v "${props}:/run/secrets/nvd.properties:ro" \
             -w /workspace \
             --entrypoint "" \
             owasp/dependency-check:latest \
@@ -290,8 +317,9 @@ jobs:
               --failOnCVSS "${SCA_FAIL_CVSS}" \
               --enableExperimental \
               --format HTML --format SARIF --format JSON \
-              ${NVD_ARGS[@]+"${NVD_ARGS[@]}"}
-          rc=$?
+              --propertyfile /run/secrets/nvd.properties 2>&1 | tee reports/sca/dependency-check.log
+          rc=${PIPESTATUS[0]}
+          rm -f "${props}"
           set -e
           echo "rc=${rc}" >> "$GITHUB_OUTPUT"
           exit "${rc}"
@@ -314,17 +342,35 @@ jobs:
         if: always()
         env:
           SCAN_RC: ${{ steps.scan.outputs.rc }}
+          KEY_MISSING: ${{ steps.nvdkey.outputs.missing }}
         run: |
           set -euo pipefail
           rc="${SCAN_RC:-}"
           {
             echo '## OWASP Dependency-Check (SCA)'
             echo
-            if [ -z "${rc}" ]; then
+            log=reports/sca/dependency-check.log
+            if [ "${KEY_MISSING:-}" = "1" ]; then
+              echo '**DID NOT RUN — the `NVD_API_KEY` org secret is empty or unset.**'
+              echo 'OWASP Dependency-Check needs an activated NVD API key to download the'
+              echo 'NVD feed. Request one at https://nvd.nist.gov/developers/request-an-api-key,'
+              echo 'click the activation link in NVD'"'"'s email, then set the org secret'
+              echo '(an empty stdin to `gh secret set` stores an EMPTY secret without an'
+              echo 'error). See hugmesh-generator `docs/NVD-API-KEY.md`. NO COVERAGE.'
+            elif [ -z "${rc}" ]; then
               echo '**DID NOT RUN.** The scan step reported no exit code, so this'
               echo 'job scanned nothing. Treat it as NO COVERAGE, not as a pass.'
             elif [ "${rc}" = "0" ]; then
               echo '**PASS** — no dependency finding at or above CVSS 7.'
+            elif [ -f "${log}" ] && grep -q 'Invalid API Key' "${log}"; then
+              echo "**FAIL (exit ${rc}) — NVD refused the API key.** A NEW key works only"
+              echo 'after you click the activation link in NVD'"'"'s email (allow a few minutes);'
+              echo 'an invalid key looks the same. This is NOT a finding: nothing was scanned.'
+              echo 'See hugmesh-generator `docs/NVD-API-KEY.md`.'
+            elif [ -f "${log}" ] && grep -Eq 'Error updating the NVD Data|NvdApiRetryExceededException|Unable to continue dependency-check analysis' "${log}"; then
+              echo "**FAIL (exit ${rc}) — the NVD feed update failed.** Is NVD_API_KEY set"
+              echo 'and activated? This is NOT a finding: nothing was scanned.'
+              echo 'See hugmesh-generator `docs/NVD-API-KEY.md`.'
             else
               echo "**FAIL (exit ${rc})** — Dependency-Check reported a finding at or"
               echo 'above CVSS 7, or the scan itself errored.'
