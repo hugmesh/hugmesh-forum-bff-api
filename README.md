@@ -153,6 +153,7 @@ this proves authentication). The real access decision is made at the method leve
 | `/bff/forum/**` | `.authenticated()` | `hasRole('FORUM') or hasRole('ADMIN')` | `ForumController` |
 | `/bff/forum/moderation/**` | `.authenticated()` **+ MFA step-up** | `hasRole('ADMIN') or (hasRole('MOD') and hasRole('FORUM'))` | `ModerationController` |
 | `/bff/forum/admin/**` | `hasAnyRole('ADMIN','SUPERADMIN')` **+ MFA step-up** | `hasRole('ADMIN')` per method | `ForumAdminController` |
+| `/bff/forum/system/**` | `hasRole('SYSTEM')` only (no hierarchy: ADMIN/SUPERADMIN get 403; no step-up) | `hasRole('SYSTEM')` | `SystemPrivateMessageController` |
 
 - **ROLE_FORUM** reads everything, creates topics and replies, and edits or deletes
   its **own** posts. `ForumService.isOwnerOrAdmin` enforces ownership:
@@ -336,6 +337,13 @@ that `hugmesh-admin-bff-api`'s `PhpbbAdminClient` (package `adminbff.forum`) cal
 | `POST /styles` | install a phpBB style (ADMIN only; `{name}` JSON body or `?name=`, missing → 400) |
 | `POST /extensions` | install a phpBB extension (ADMIN only; same `{name}` body or `?name=`) |
 | `GET /audit` | read the `forum_action` audit trail, newest first. Optional `?limit=`, clamped server-side to 1–1000 (default 200). Scoped to the caller's brand; SUPERADMIN sees all brands. |
+
+`SystemPrivateMessageController` — `/bff/forum/system` (ROLE_SYSTEM only; the surface
+`hugmesh-admin-bff-api`'s `ForumSystemPmClient` calls for the `@system` forum notification):
+
+| Method + path | Purpose |
+|---|---|
+| `POST /private-messages` | send a phpBB private message from the `@system` account. Body `{"recipient":"<casdoor sub>","subject":"…","text":"…"}`, `Idempotency-Key` header required (1-255 visible ASCII). Forwarded with the caller's own bearer, the same key and the same body to the extension's `POST /api/v1/hugmesh/system/private-messages`. The extension's 2xx `{"id":n}` passes through (with `Idempotent-Replayed: true` on a replay); `404 {"code":"unknown_recipient"}` passes through verbatim; `409`/`422` idempotency codes pass through; any other answer, a transport error or a timeout is `502 {"code":"forum_upstream_error"}` (never a 404, so admin-bff retries); `phpbb.enabled=false` is `503 {"code":"forum_unavailable"}`. No account holds `ROLE_SYSTEM` yet: admin-bff provisions `@system` with `user`, `matrix`, `mastodon`, so it must grant `system` before its forum channel can deliver. |
 
 The phpBB HTTP leg stays behind this BFF's own `phpbb.enabled` flag. The BFF-to-BFF
 seam above is real and tested even while no phpBB call is made (see

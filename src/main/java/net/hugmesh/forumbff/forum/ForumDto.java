@@ -124,4 +124,17 @@ public final class ForumDto {
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record InstallBody(
             @NotBlank(message = "name is required") @Size(max = 255, message = "name is too long") String name) {}
+
+    /**
+     * {@code POST /bff/forum/system/private-messages} body, the shape admin-bff's
+     * {@code ForumSystemPmClient} sends: {@code recipient} is the Casdoor subject of the
+     * phpBB user to message; {@code subject} and {@code text} may be empty. Forwarded to
+     * the forum-api extension's {@code POST /api/v1/hugmesh/system/private-messages} with
+     * the same three fields.
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record SystemPrivateMessage(
+            @NotBlank(message = "recipient is required") @Size(max = 255, message = "recipient is too long") String recipient,
+            @Size(max = 255, message = "subject is too long") String subject,
+            @Size(max = 64000, message = "text is too long") String text) {}
 }

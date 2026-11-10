@@ -37,6 +37,15 @@ public final class Roles {
     private Roles() {}
 
     /**
+     * The role name (no {@code ROLE_} prefix, as {@code hasRole} takes it) held ONLY by the
+     * per-domain {@code @system} notification sender. Casdoor role {@code ROLE_SYSTEM} (or
+     * {@code system}); {@code CasdoorAuthorities} strips one leading {@code ROLE_} and
+     * re-prefixes, so both spellings become the authority {@code ROLE_SYSTEM}. The only
+     * surface it opens is {@code /bff/forum/system/**}.
+     */
+    public static final String SYSTEM = "SYSTEM";
+
+    /**
      * Non-role marker authority asserting THIS session completed a second factor
      * recently (D8 MFA floor). NOT a Casdoor role and NOT a permission — it is
      * derived ONLY by {@link #isMfaSatisfied(Jwt, long, long)} from the

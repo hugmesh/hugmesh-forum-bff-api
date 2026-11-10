@@ -179,6 +179,12 @@ public class SecurityConfig {
         ex.pathMatchers("/bff/forum/moderation/**").access(
                 stepUp(AuthenticatedReactiveAuthorizationManager.authenticated(),
                         ForumStepUpGate.Surface.MODERATION));
+        // The @system machine seam (admin-bff ForumSystemPmClient): ROLE_SYSTEM and NOTHING
+        // else. authorizeExchange applies no role hierarchy, so ADMIN / SUPERADMIN do not
+        // reach it either; the route sends a phpBB private message AS the caller, and only
+        // the neutral @system sender may do that. No step-up: a machine token has no MFA.
+        // Declared before the floor so the more-specific prefix wins.
+        ex.pathMatchers("/bff/forum/system/**").hasRole(Roles.SYSTEM);
         // The whole forum surface — the ROLE_FORUM floor is enforced at the gateway, so
         // .authenticated() proves authentication here. The moderation AND-of-MOD+FORUM
         // gate + ownership are re-checked at the method level (@PreAuthorize) in the
