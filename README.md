@@ -854,9 +854,9 @@ configuration-gated seams and proof-coverage gaps, not unfinished code.
   extension and both flags on (see [Live phpBB smoke test](#live-phpbb-smoke-test)).
   Categories, topic listing and topic creation pass. The ban leg proves `doSuspend()`
   reaches the extension, but `hugmesh-forum-api` 0.4.0-beta.2 answers that call with a
-  503: its `admin_service::ban_user` inserts a `ban_check_pm` column that phpBB 3.3.11's
-  `phpbb_banlist` does not have. The BFF records the ban and answers `202
-  pending-reconcile` (`external=degraded:...`). The ban leg goes green once a fixed
+  503 text/html phpBB error page: its `admin_service::ban_user` inserts a `ban_check_pm`
+  column that phpBB 3.3.11's `phpbb_banlist` does not have. The BFF records the ban and
+  answers `202 pending-reconcile` (`external=degraded:http-503`). The ban leg goes green once a fixed
   extension image is published and the digest in the test is bumped. Against a copy of
   that image with the one `ban_check_pm` line removed, the ban leg passes (200
   `applied`, a `phpbb_banlist` row, `user_type = 3`).
