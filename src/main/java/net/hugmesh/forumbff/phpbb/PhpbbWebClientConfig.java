@@ -7,6 +7,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.security.core.context.ReactiveSecurityContextHolder;
@@ -159,24 +160,41 @@ public class PhpbbWebClientConfig {
      * HTML branch — a phpBB-rendered login / ACP / error page must NEVER transit to the
      * client: release the upstream body and replace it with an empty body that keeps the
      * upstream status, stripping {@code Set-Cookie} on the way out.
+     *
+     * <p>The upstream body is subscribed EXACTLY ONCE, by {@code releaseBody()}, and the
+     * replacement is built fresh with {@code ClientResponse.create}. It must not come from
+     * {@code response.mutate().body(..)}: the builder's {@code body(..)} drains the body it
+     * already holds, which for a {@code mutate()} builder IS the upstream Reactor Netty
+     * inbound. Together with {@code releaseBody()} that subscribed the inbound twice, and
+     * Reactor Netty refuses a second subscriber while the first is still open:
+     * {@code IllegalStateException: Rejecting additional inbound receiver}. phpBB's 503 SQL
+     * error page for a ban then surfaced as {@code degraded:IllegalStateException} instead
+     * of {@code degraded:http-503} (phpbb-smoke, run 42772063995).
      */
     private static Mono<ClientResponse> dropHtmlPage(ClientResponse response) {
         log.warn("[phpbb] dropped a text/html phpBB response (status={}) — a phpBB-rendered "
                 + "page must never transit to the client", response.statusCode());
         return response.releaseBody()
-                .thenReturn(response.mutate()
-                        .headers(h -> h.remove("Set-Cookie"))
-                        .body("")
-                        .build());
+                .then(Mono.fromSupplier(() -> ClientResponse.create(response.statusCode(), response.strategies())
+                        .headers(h -> {
+                            h.addAll(response.headers().asHttpHeaders());
+                            h.remove(HttpHeaders.SET_COOKIE);
+                        })
+                        .request(response.request())
+                        .build()));
     }
 
     /**
-     * Non-HTML (JSON) branch — strip {@code Set-Cookie} but PRESERVE the body stream.
+     * Non-HTML (JSON) branch — strip {@code Set-Cookie} but PRESERVE the body stream. A
+     * response without {@code Set-Cookie} is handed on untouched. Otherwise
      * {@code ClientResponse.mutate()} (Spring 7; replaces the removed static {@code .from()})
-     * copies status/headers/strategies but NOT the body, so the original body data buffers
-     * are re-attached explicitly (otherwise the JSON would be dropped too).
+     * carries the original body over lazily, so it is still subscribed once, by whoever
+     * reads the mutated response.
      */
     private static Mono<ClientResponse> stripCookiesPreserveBody(ClientResponse response) {
+        if (response.headers().header(HttpHeaders.SET_COOKIE).isEmpty()) {
+            return Mono.just(response);
+        }
         // mutate() PRESERVES the original body by itself — do NOT re-set it via
         // response.bodyToFlux(...). Doing so wires the mutated response's body to a
         // SECOND subscription of the same Reactor Netty inbound, and the first real
@@ -188,7 +206,7 @@ public class PhpbbWebClientConfig {
         // every response took the isHtml/error branch, so no JSON body ever
         // transited here until the real extension came up.
         return Mono.just(response.mutate()
-                .headers(h -> h.remove("Set-Cookie"))
+                .headers(h -> h.remove(HttpHeaders.SET_COOKIE))
                 .build());
     }
 }

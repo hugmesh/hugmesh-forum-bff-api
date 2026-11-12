@@ -637,6 +637,38 @@ make ci-parity                   # text-only check that the CI constants agree (
 The full-context and repository tests start a Testcontainers Postgres, so Docker must
 be running.
 
+### Live phpBB smoke test
+
+```sh
+./mvnw test -Pphpbb-smoke        # ONLY the live phpBB smoke test (needs Docker; about 1 min)
+./mvnw test -Pphpbb-smoke -Dphpbb.smoke.image=<ref>   # against another build of the phpBB image
+```
+
+[`PhpbbLiveSmokeTest`](src/test/java/net/hugmesh/forumbff/smoke/PhpbbLiveSmokeTest.java)
+(JUnit tag `phpbb-smoke`) starts a Postgres and the phpBB image through Testcontainers,
+lets the image's entrypoint run the headless phpBB install and enable the extension,
+then calls this BFF with `phpbb.enabled=true` and `external.forum.enabled=true`:
+
+- `GET /bff/forum/categories` and `GET /bff/forum/topics` return the forum and the
+  welcome topic a fresh phpBB install creates;
+- `POST /bff/forum/topics` creates a topic that phpBB then lists, and the row is in
+  phpBB's own database;
+- `POST /bff/forum/admin/users/{sub}/ban` makes the real admin call, answers 200
+  `applied` with `external=ok`, writes a `forum_action` row, and phpBB's
+  `phpbb_banlist` and `phpbb_users` show the ban. This leg currently fails against the
+  published extension (see [Known gaps](#known-gaps)).
+
+The image is `ghcr.io/hugmesh/hugmesh-forum-api` pinned by digest (0.4.0-beta.2): the
+same Dockerfile the generator's `PHPBB=1` compose profile builds
+(`tests/stack/compose.alt-social.yaml`), published by `hugmesh-forum-api`'s release
+workflow. Upstream phpBB publishes no usable image. The container env mirrors that
+compose service. JWTs come from an in-process `TestIssuer`; the extension fetches the
+same JWKS through Testcontainers' host tunnel. Nothing touches a shared or long-lived
+stack.
+
+A plain `./mvnw test` or `verify` excludes the tag (`smoke.excludedGroups` in
+`pom.xml`).
+
 The [`Dockerfile`](Dockerfile) is a two-stage Temurin 25 build
 (`package -DskipTests` → JRE runtime). It exposes port 8080.
 
@@ -685,6 +717,7 @@ stage has no job):
 | Stage / job | What it does | Gate |
 |---|---|---|
 | `test` | runs `scripts/ci-parity-guard.sh`, then `./mvnw verify -B -s settings.xml` in a Temurin 25 container (runner tags `hugmesh-x86`, `privileged`), then fails if the build rewrote a committed file (`git diff --exit-code`); publishes JUnit reports | blocks `build:image` |
+| `test:phpbb-smoke` | `./mvnw test -B -s settings.xml -Pphpbb-smoke` in the same Temurin 25 container: the [live phpBB smoke test](#live-phpbb-smoke-test) against a throwaway phpBB 3.3.11 + `hugmesh/forumapi`; publishes JUnit reports | blocking; `build:image` needs only `test` |
 | `build:image` | Docker build with BuildKit, tagged with the release tag or short git SHA plus a moving branch-slug tag, pushed to the GitLab registry; default branch and tags only | runs only after `test` passes |
 | `pentest:sca` | OWASP Dependency-Check SCA over this repo, via a shared job template from `hugmesh-generator` | advisory (`allow_failure`) |
 | `pentest:dast` | authenticated OWASP ZAP baseline DAST plus custom probes, via a shared job template from `hugmesh-generator` | advisory (`allow_failure`) |
@@ -705,6 +738,8 @@ on pull requests, and a fork's pull request runs the fork's copy of the file):
   `scripts/test-release-workflow.py`, then `./mvnw -B clean verify` with `.github/maven-ci-settings.xml` (GitHub Packages)
   when the `PACKAGES_READ_TOKEN` secret reaches the run, otherwise with the GitLab
   `settings.xml`, which a hosted runner cannot reach.
+- `phpbb-smoke`: JDK 25, then `./mvnw -B clean test -Pphpbb-smoke` with the same
+  settings selection as `build`: the [live phpBB smoke test](#live-phpbb-smoke-test).
 - `sca`: OWASP Dependency-Check in the `owasp/dependency-check` image (fails at CVSS
   7), non-blocking (`continue-on-error: true`).
 
@@ -807,14 +842,24 @@ The code has no `FIXME`s or unimplemented-method stubs. The gaps below are
 configuration-gated seams and proof-coverage gaps, not unfinished code.
 
 - **`phpbb.enabled` and `external.forum.enabled` both default to `false`.** With the
-  defaults, `PhpbbApiClient` reads return typed empty/degraded responses, writes are
-  no-ops, and `PhpbbAdminClient.doSuspend()` stays stubbed (`202 pending-reconcile`,
-  no real HTTP call). The generator's cluster manifest overrides both to `true`. See
+  defaults, `PhpbbApiClient` reads return typed empty/degraded responses and writes are
+  no-ops. `PhpbbAdminClient.doSuspend()` makes the real `POST`/`DELETE`
+  `/api/v1/hugmesh/admin/users/{sub}/ban` call; it is stubbed (`202 pending-reconcile`,
+  no HTTP call) only when `external.forum.enabled=false`. The generator's cluster
+  manifest overrides both flags to `true`. See
   [Headless phpBB integration](#headless-phpbb-integration).
-- **Nothing in this repo proves end-to-end HTTP posting through a live phpBB.** The
-  `hugmesh-forum-api` extension is proven to install, enable, migrate and route on
-  phpBB 3.3.11, but no test or CI job here runs this BFF against a running phpBB
-  instance.
+- **The live phpBB path is tested; the ban leg is red on the published extension.**
+  [`PhpbbLiveSmokeTest`](src/test/java/net/hugmesh/forumbff/smoke/PhpbbLiveSmokeTest.java)
+  runs this BFF against a real, throwaway phpBB 3.3.11 with the `hugmesh/forumapi`
+  extension and both flags on (see [Live phpBB smoke test](#live-phpbb-smoke-test)).
+  Categories, topic listing and topic creation pass. The ban leg proves `doSuspend()`
+  reaches the extension, but `hugmesh-forum-api` 0.4.0-beta.2 answers that call with a
+  503 text/html phpBB error page: its `admin_service::ban_user` inserts a `ban_check_pm`
+  column that phpBB 3.3.11's `phpbb_banlist` does not have. The BFF records the ban and
+  answers `202 pending-reconcile` (`external=degraded:http-503`). The ban leg goes green once a fixed
+  extension image is published and the digest in the test is bumped. Against a copy of
+  that image with the one `ban_check_pm` line removed, the ban leg passes (200
+  `applied`, a `phpbb_banlist` row, `user_type = 3`).
 - **The GitHub CI workflow has never run green.** Until 2026-10-21 `ci.yml` targeted a
   `hugmesh-x86` runner that was never registered; it now runs on hosted runners, which
   failed on billing while the repository was private. Branch protection cannot be set

@@ -144,6 +144,43 @@ class PhpbbAdminClientTest {
                 .verifyComplete();
     }
 
+    /**
+     * The outcome is written to {@code forum_action.outcome}, a varchar(64). The live
+     * phpBB smoke test caught a refused ban (phpBB 503) producing
+     * {@code degraded:503 Service Unavailable from POST http://...}, which overflowed the
+     * column: the ban answered 500 and left no audit row.
+     */
+    @Test
+    void suspendUser_onHttpError_degradedOutcomeFitsTheAuditColumn() {
+        Recorder rec = new Recorder(HttpStatus.SERVICE_UNAVAILABLE);
+        PhpbbAdminClient client = new PhpbbAdminClient(web(rec), true);
+
+        StepVerifier.create(client.suspendUser("a-realistic-casdoor-subject-0b5f6c1e", "spam"))
+                .assertNext(o -> {
+                    assertThat(o.result()).isEqualTo("degraded:http-503");
+                    assertThat(o.result().length()).isLessThanOrEqualTo(BlockOutcome.MAX_RESULT_LENGTH);
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void unsuspendUser_onHttpError_degradedOutcomeFitsTheAuditColumn() {
+        Recorder rec = new Recorder(HttpStatus.NOT_FOUND);
+        PhpbbAdminClient client = new PhpbbAdminClient(web(rec), true);
+
+        StepVerifier.create(client.unsuspendUser("a-realistic-casdoor-subject-0b5f6c1e", "appeal"))
+                .assertNext(o -> assertThat(o.result()).isEqualTo("degraded:http-404"))
+                .verifyComplete();
+    }
+
+    @Test
+    void blockOutcome_degraded_isClampedToTheAuditColumn() {
+        BlockOutcome o = BlockOutcome.degraded("x".repeat(500));
+        assertThat(o.result()).startsWith("degraded:xxx");
+        assertThat(o.result()).hasSize(BlockOutcome.MAX_RESULT_LENGTH);
+        assertThat(o.isOk()).isFalse();
+    }
+
     // -------------------------------------------------------------------------
     // CWE-117 log-injection — CRLF/control chars in reason+subject are neutralized
     // -------------------------------------------------------------------------
