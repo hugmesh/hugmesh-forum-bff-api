@@ -157,7 +157,7 @@ or once at org level:
 | `GITLAB_MAVEN_TOKEN` | Read-scoped token (or long-lived deploy token) for the GitLab group Maven registry. Reaches the build as the BuildKit secret `ci_job_token` and as `$CI_JOB_TOKEN`. |
 | `GITLAB_API_V4_URL` | The in-cluster GitLab API v4 base, e.g. `https://gitlab.<tailnet>/api/v4` |
 | `GITLAB_GROUP_ID` | The HugMesh GitLab group id |
-| `NVD_API_KEY` | **Optional**, forum-bff `ci.yml` `sca` only. Speeds the Dependency-Check feed sync; the scan runs without it, just slower on a cold cache. |
+| `NVD_API_KEY` | **Required** for forum-bff `ci.yml` `sca` (org secret, visibility all). The NVD API key OWASP Dependency-Check needs to download the NVD feed: without it, or with an EMPTY stored value, the scan ends in exit 13. A **new key works only after you click the activation link in NVD's email** (allow a few minutes). Set it from a real terminal (an empty stdin to `gh secret set` stores an empty secret without an error). See hugmesh-generator `docs/NVD-API-KEY.md`. |
 
 All four are `secrets.`, **never** `vars.` — see §8.
 
