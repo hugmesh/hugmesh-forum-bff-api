@@ -3,11 +3,15 @@ package net.hugmesh.forumbff.phpbb;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import net.hugmesh.forumbff.forum.ForumDto;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.function.Supplier;
 
@@ -220,6 +224,50 @@ public class PhpbbApiClient {
     public Mono<Void> rejectQueued(String id) {
         return call("moderation-reject", () ->
                 http.post().uri(BASE + "/admin/moderation/{id}/reject", id).retrieve().bodyToMono(Void.class));
+    }
+
+    // ── @system private messages (ROLE_SYSTEM only at the path rule + controller) ──
+
+    /** The extension route admin-bff's ForumSystemPmClient contract ends at. */
+    public static final String SYSTEM_PM_PATH = BASE + "/system/private-messages";
+    private static final Duration SYSTEM_PM_TIMEOUT = Duration.ofSeconds(30);
+
+    /** What the extension answered: status, raw body, and whether it was a key replay. */
+    public record SystemPmReply(int status, String body, boolean replayed) {}
+
+    /**
+     * Forward one {@code @system} private message to the extension with the caller's own
+     * bearer (set explicitly here, so the call never depends on the reactive security
+     * context reaching the filter) and the caller's {@code Idempotency-Key}.
+     *
+     * <p>Returns the extension's status and body AS IS for the controller to map; no
+     * circuit breaker, because a {@code 404 unknown_recipient} is an ordinary answer, not
+     * a fault. Empty when {@code phpbb.enabled=false} (no HTTP call).
+     */
+    public Mono<SystemPmReply> sendSystemPrivateMessage(String bearer, String idempotencyKey,
+                                                        ForumDto.SystemPrivateMessage body) {
+        return call("system-private-message", () ->
+                http.post().uri(SYSTEM_PM_PATH)
+                        .headers(h -> systemPmHeaders(h, bearer, idempotencyKey))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .bodyValue(body)
+                        .exchangeToMono(PhpbbApiClient::toSystemPmReply)
+                        .timeout(SYSTEM_PM_TIMEOUT));
+    }
+
+    private static void systemPmHeaders(HttpHeaders h, String bearer, String idempotencyKey) {
+        h.setBearerAuth(bearer);
+        h.set(PhpbbWebClientConfig.HUGMESH_JWT_HEADER, bearer);
+        h.set("Idempotency-Key", idempotencyKey);
+    }
+
+    /** Status, raw body (empty when none) and the replay header, whatever the status. */
+    private static Mono<SystemPmReply> toSystemPmReply(ClientResponse resp) {
+        boolean replayed = "true".equalsIgnoreCase(
+                resp.headers().asHttpHeaders().getFirst("Idempotent-Replayed"));
+        return resp.bodyToMono(String.class).defaultIfEmpty("")
+                .map(raw -> new SystemPmReply(resp.statusCode().value(), raw, replayed));
     }
 
     // ── The single external-call seam ──────────────────────────────────

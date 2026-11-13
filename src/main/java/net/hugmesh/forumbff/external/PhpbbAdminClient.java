@@ -3,6 +3,9 @@ package net.hugmesh.forumbff.external;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Mono;
@@ -125,16 +128,35 @@ public class PhpbbAdminClient {
     }
 
     /**
+     * The outcome of a 2xx answer: {@link BlockOutcome#OK} only when the EXTENSION answered.
+     * The extension answers a ban/unban with a bodyless 204 or JSON. A 2xx {@code text/html}
+     * answer is a phpBB-rendered page (login, board index) from something other than the
+     * extension route; the response-hygiene filter drops its body but keeps its status, so
+     * without this check a ban phpBB never applied would be recorded as applied. A 204 is
+     * exempt: it carries no content, so the {@code text/html} PHP sends by default on a
+     * response that sets no type describes nothing.
+     */
+    static BlockOutcome outcomeOf(ResponseEntity<Void> answer) {
+        MediaType type = answer.getHeaders().getContentType();
+        int status = answer.getStatusCode().value();
+        if (type != null && type.includes(MediaType.TEXT_HTML) && status != HttpStatus.NO_CONTENT.value()) {
+            return BlockOutcome.degraded("html-" + status);
+        }
+        return BlockOutcome.OK;
+    }
+
+    /**
      * The single external-call seam. When {@code external.forum.enabled=false} returns
      * {@link BlockOutcome#STUBBED} immediately without any HTTP call (safe default).
      * When enabled:
      * <ul>
      *   <li>{@code suspend=true} — POST {@code /api/v1/hugmesh/admin/users/{sub}/ban}
      *       with a JSON body {@code {"reason": "<reason>"}}; returns {@link BlockOutcome#OK}
-     *       on 2xx or {@link BlockOutcome#degraded(String)} on error.</li>
+     *       on a 2xx from the extension (see {@link #outcomeOf}) or
+     *       {@link BlockOutcome#degraded(String)} on error.</li>
      *   <li>{@code suspend=false} — DELETE {@code /api/v1/hugmesh/admin/users/{sub}/ban};
-     *       returns {@link BlockOutcome#OK} on 2xx or {@link BlockOutcome#degraded(String)}
-     *       on error.</li>
+     *       returns {@link BlockOutcome#OK} on a 2xx from the extension (see
+     *       {@link #outcomeOf}) or {@link BlockOutcome#degraded(String)} on error.</li>
      * </ul>
      * An idempotent already-suspended/already-lifted response from the extension must be
      * swallowed as OK by the extension; the caller records the outcome regardless.
@@ -150,7 +172,7 @@ public class PhpbbAdminClient {
                     .bodyValue(Map.of("reason", reason == null ? "" : reason))
                     .retrieve()
                     .toBodilessEntity()
-                    .thenReturn(BlockOutcome.OK)
+                    .map(PhpbbAdminClient::outcomeOf)
                     .onErrorResume(e -> Mono.just(degradedFrom(casdoorSubject, e)));
         } else {
             // DELETE the ban — extension lifts phpBB ban + re-adds groups per current roles
@@ -158,7 +180,7 @@ public class PhpbbAdminClient {
                     .uri(BASE + "/users/{sub}/ban", casdoorSubject)
                     .retrieve()
                     .toBodilessEntity()
-                    .thenReturn(BlockOutcome.OK)
+                    .map(PhpbbAdminClient::outcomeOf)
                     .onErrorResume(e -> Mono.just(degradedFrom(casdoorSubject, e)));
         }
     }

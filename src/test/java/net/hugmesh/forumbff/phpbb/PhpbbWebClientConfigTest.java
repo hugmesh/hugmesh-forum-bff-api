@@ -1,6 +1,7 @@
 package net.hugmesh.forumbff.phpbb;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -16,6 +17,7 @@ import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
+import java.net.URI;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -98,6 +100,18 @@ class PhpbbWebClientConfigTest {
         // The text/html body is dropped to empty so a phpBB page never reaches the client.
         StepVerifier.create(web.get().uri("/").exchangeToMono(r -> r.bodyToMono(String.class).defaultIfEmpty("")))
                 .assertNext(body -> assertThat(body).doesNotContain("phpBB login"))
+                .verifyComplete();
+    }
+
+    @Test
+    void responseHygieneFilter_jsonWithoutSetCookie_isHandedOnUntouched() {
+        ClientResponse upstream = ClientResponse.create(HttpStatus.OK)
+                .header("Content-Type", MediaType.APPLICATION_JSON_VALUE)
+                .body("{}").build();
+        ClientRequest request = ClientRequest.create(HttpMethod.GET, URI.create("http://phpbb.test/x")).build();
+        StepVerifier.create(PhpbbWebClientConfig.responseHygieneFilter()
+                        .filter(request, new Recorder(upstream)))
+                .assertNext(r -> assertThat(r).isSameAs(upstream))
                 .verifyComplete();
     }
 
