@@ -88,12 +88,14 @@ class PhpbbLiveSmokeTest extends PostgresTestSupport {
     static final String TAG = "phpbb-smoke";
 
     /**
-     * hugmesh-forum-api 0.4.0-beta.2 (sha-d2821bd0978e): phpBB 3.3.11 + hugmesh/forumapi.
+     * hugmesh-forum-api 0.5.0-beta.2 (sha-fe24787bffa6): phpBB 3.3.11 + hugmesh/forumapi. This is the
+     * first build whose admin ban sets USER_IGNORE (2) and never makes the banned user a founder (3);
+     * 0.4.0-beta.2 wrote 3, which is why this test used to expect 3.
      * {@code -Dphpbb.smoke.image=<ref>} runs against another build of the same image (a
      * newer forum-api release, or one built locally from that repo's Dockerfile).
      */
     static final String PHPBB_IMAGE = System.getProperty("phpbb.smoke.image",
-            "ghcr.io/hugmesh/hugmesh-forum-api@sha256:0ebe0183fb5eeb55e6779fb9cb20a2bc19a2b1316abe1d565faf5a0ab31623ac");
+            "ghcr.io/hugmesh/hugmesh-forum-api@sha256:a53c5e0214b0e5ccbb724376c870ff3e6c8a47c4590a7a4a83728af43c1b2f36");
 
     /** Same Postgres the generator's phpbb-db service runs. */
     static final String PHPBB_DB_IMAGE = "postgres:16-alpine";
@@ -302,10 +304,14 @@ class PhpbbLiveSmokeTest extends PostgresTestSupport {
         assertThat(external).as("BlockOutcome").isEqualTo("ok");
         assertThat(outcome.path("state").asText()).isEqualTo("applied");
 
-        // phpBB's own tables carry the ban: a banlist row and user_type = USER_IGNORE (3).
+        // phpBB's own tables carry the ban: a banlist row and user_type = USER_IGNORE (2). phpBB's
+        // constants are NORMAL 0, INACTIVE 1, IGNORE 2, FOUNDER 3: a banned user must never be a founder.
         assertThat(bansFor(target)).isEqualTo(1);
         assertThat(count("SELECT COUNT(*) FROM phpbb_users u JOIN phpbb_hugmesh_casdoor_map m "
-                + "ON m.user_id = u.user_id WHERE m.casdoor_sub = ? AND u.user_type = 3", target)).isEqualTo(1);
+                + "ON m.user_id = u.user_id WHERE m.casdoor_sub = ? AND u.user_type = 2", target)).isEqualTo(1);
+        assertThat(count("SELECT COUNT(*) FROM phpbb_users u JOIN phpbb_hugmesh_casdoor_map m "
+                + "ON m.user_id = u.user_id WHERE m.casdoor_sub = ? AND u.user_type = 3", target))
+                .as("a banned user must not be made a founder").isZero();
     }
 
     private static int bansFor(String subject) throws SQLException {
