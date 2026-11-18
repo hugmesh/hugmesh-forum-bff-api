@@ -852,14 +852,16 @@ configuration-gated seams and proof-coverage gaps, not unfinished code.
   [`PhpbbLiveSmokeTest`](src/test/java/net/hugmesh/forumbff/smoke/PhpbbLiveSmokeTest.java)
   runs this BFF against a real, throwaway phpBB 3.3.11 with the `hugmesh/forumapi`
   extension and both flags on (see [Live phpBB smoke test](#live-phpbb-smoke-test)).
-  Categories, topic listing and topic creation pass. The ban leg proves `doSuspend()`
-  reaches the extension, but `hugmesh-forum-api` 0.4.0-beta.2 answers that call with a
-  503 text/html phpBB error page: its `admin_service::ban_user` inserts a `ban_check_pm`
-  column that phpBB 3.3.11's `phpbb_banlist` does not have. The BFF records the ban and
-  answers `202 pending-reconcile` (`external=degraded:http-503`). The ban leg goes green once a fixed
-  extension image is published and the digest in the test is bumped. Against a copy of
-  that image with the one `ban_check_pm` line removed, the ban leg passes (200
-  `applied`, a `phpbb_banlist` row, `user_type = 2` = USER_IGNORE, never 3 = FOUNDER: phpBB's constants are NORMAL 0, INACTIVE 1, IGNORE 2, FOUNDER 3, and forum-api before 0.5.0-beta.2 wrote 3).
+  All four legs pass against the published `hugmesh-forum-api` 0.5.0-beta.2 (the digest pinned in the
+  test): categories, topic listing, topic creation and the ban. The ban leg reaches the extension,
+  answers `200 applied`, and phpBB carries a `phpbb_banlist` row and `user_type = 2` (USER_IGNORE; never
+  3 = FOUNDER: phpBB's constants are NORMAL 0, INACTIVE 1, IGNORE 2, FOUNDER 3). Against 0.4.0-beta.2
+  the same call answered a 503 HTML page (`ban_user` inserted a `ban_check_pm` column phpBB 3.3.11's
+  `phpbb_banlist` does not have), the BFF recorded the ban and answered `202 pending-reconcile`
+  (`external=degraded:http-503`), and a patched copy that got past it made the banned user a founder.
+  Both are fixed in forum-api 0.5.0-beta.2. The `ensure-user ... 403` lines in a run's log are expected:
+  a normal user posting reaches forum-api's admin-only ensure endpoint, the BFF degrades, and the post
+  itself still succeeds.
 - **The GitHub CI workflow has never run green.** Until 2026-10-21 `ci.yml` targeted a
   `hugmesh-x86` runner that was never registered; it now runs on hosted runners, which
   failed on billing while the repository was private. Branch protection cannot be set
