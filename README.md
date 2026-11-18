@@ -859,7 +859,7 @@ configuration-gated seams and proof-coverage gaps, not unfinished code.
   answers `202 pending-reconcile` (`external=degraded:http-503`). The ban leg goes green once a fixed
   extension image is published and the digest in the test is bumped. Against a copy of
   that image with the one `ban_check_pm` line removed, the ban leg passes (200
-  `applied`, a `phpbb_banlist` row, `user_type = 3`).
+  `applied`, a `phpbb_banlist` row, `user_type = 2` = USER_IGNORE, never 3 = FOUNDER: phpBB's constants are NORMAL 0, INACTIVE 1, IGNORE 2, FOUNDER 3, and forum-api before 0.5.0-beta.2 wrote 3).
 - **The GitHub CI workflow has never run green.** Until 2026-10-21 `ci.yml` targeted a
   `hugmesh-x86` runner that was never registered; it now runs on hosted runners, which
   failed on billing while the repository was private. Branch protection cannot be set
